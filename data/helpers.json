@@ -5,17 +5,301 @@
       "id": "claude",
       "name": "Claude Code",
       "command": "claude",
-      "ask": { "argv": ["claude", "-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "{prompt}"], "stdin": false },
-      "task": { "argv": ["claude", "{prompt}"] },
+      "ask": {
+        "argv": [
+          "claude",
+          "-p",
+          "--tools",
+          "",
+          "--strict-mcp-config",
+          "--no-session-persistence",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "claude",
+          "{prompt}"
+        ]
+      },
       "verified": true
     },
     {
       "id": "codex",
       "name": "Codex",
       "command": "codex",
-      "ask": { "argv": ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "{prompt}"], "stdin": false },
-      "task": { "argv": ["codex", "{prompt}"] },
+      "ask": {
+        "argv": [
+          "codex",
+          "exec",
+          "--sandbox",
+          "read-only",
+          "--skip-git-repo-check",
+          "--ephemeral",
+          "--color",
+          "never",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "codex",
+          "{prompt}"
+        ]
+      },
       "verified": true
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "command": "gemini",
+      "ask": {
+        "argv": [
+          "gemini",
+          "--approval-mode",
+          "default",
+          "-o",
+          "text",
+          "-p",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "gemini",
+          "-i",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "agy",
+      "name": "Antigravity CLI",
+      "command": "agy",
+      "ask": {
+        "argv": [
+          "agy",
+          "-p",
+          "{prompt}",
+          "--output-format",
+          "text",
+          "--mode=plan",
+          "--sandbox"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "agy",
+          "-i",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "command": "opencode",
+      "ask": null,
+      "task": {
+        "argv": [
+          "opencode",
+          "--prompt",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "cursor-agent",
+      "name": "Cursor CLI",
+      "command": "cursor-agent",
+      "ask": {
+        "argv": [
+          "cursor-agent",
+          "-p",
+          "--mode",
+          "ask",
+          "--sandbox",
+          "enabled",
+          "--output-format",
+          "text",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "cursor-agent",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "copilot",
+      "name": "GitHub Copilot",
+      "command": "copilot",
+      "ask": {
+        "argv": [
+          "copilot",
+          "-p",
+          "{prompt}",
+          "-s",
+          "--no-ask-user",
+          "--deny-tool=shell",
+          "--deny-tool=write",
+          "--deny-tool=url",
+          "--deny-tool=memory"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "copilot",
+          "-i",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "goose",
+      "name": "Goose",
+      "command": "goose",
+      "ask": null,
+      "task": {
+        "argv": [
+          "goose",
+          "run",
+          "-t",
+          "{prompt}",
+          "-s"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "command": "grok",
+      "ask": {
+        "argv": [
+          "grok",
+          "--no-auto-update",
+          "-p",
+          "{prompt}",
+          "--output-format",
+          "plain",
+          "--permission-mode",
+          "dontAsk",
+          "--sandbox",
+          "read-only"
+        ],
+        "stdin": false
+      },
+      "task": null,
+      "verified": false
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "command": "hermes",
+      "ask": {
+        "argv": [
+          "hermes",
+          "-t",
+          "todo",
+          "--ignore-rules",
+          "-z",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "hermes",
+          "chat",
+          "-q",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "omp",
+      "name": "Oh My Pi",
+      "command": "omp",
+      "ask": {
+        "argv": [
+          "omp",
+          "-p",
+          "--no-tools",
+          "--no-extensions",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "omp",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "command": "openclaw",
+      "ask": {
+        "argv": [
+          "openclaw",
+          "agent",
+          "exec",
+          "--config-override",
+          "{\"tools\":{\"deny\":[\"*\"]}}",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "openclaw",
+          "chat",
+          "--message",
+          "{prompt}"
+        ]
+      },
+      "verified": false
+    },
+    {
+      "id": "pi",
+      "name": "Pi",
+      "command": "pi",
+      "ask": {
+        "argv": [
+          "pi",
+          "-p",
+          "--no-tools",
+          "--no-approve",
+          "{prompt}"
+        ],
+        "stdin": false
+      },
+      "task": {
+        "argv": [
+          "pi",
+          "--",
+          "{prompt}"
+        ]
+      },
+      "verified": false
     }
   ]
 }
