@@ -1,0 +1,30 @@
+[package]
+name = "maprisma-notifier"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Notification centre for COSMIC, KDE and Hyprland: history, unread count and do not disturb"
+
+[[bin]]
+name = "maprisma-notifier-recorder"
+path = "src/recorder/main.rs"
+
+[dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Already in the dependency tree (libcosmic): F12 screenshots (PNG, openat/fstat).
+png = "0.18"
+libc = "0.2"
+tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt", "rt-multi-thread", "sync"] }
+futures-util = "0.3"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+# The revision COSMIC's own applets (cosmic-applets 1.11) are built against.
+rev = "95236a944bfd51c63a2fc65fe50a592c47168d40"
+default-features = false
+features = ["applet", "applet-token", "dbus-config", "multi-window", "tokio", "wayland", "winit"]
+
+[profile.release]
+lto = "thin"
