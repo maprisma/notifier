@@ -92,4 +92,46 @@ mod tests {
     #[test] fn locale_precedence() {
         for (input, expected) in [(["de_DE.UTF-8", "fr", "pl"], "de"), (["", "fr-FR", "de"], "fr"), (["", "", "pl_PL@euro"], "pl"), (["zz", "de", "fr"], "en"), (["C", "de", "fr"], "en"), (["POSIX", "", "de"], "en"), (["", "", ""], "en")] { assert_eq!(system_language(input), expected); }
     }
+    fn placeholders(text: &str) -> Vec<String> {
+        let mut found: Vec<String> = text.match_indices('{').filter_map(|(i, _)| text[i..].find('}').map(|e| text[i..i + e + 1].to_owned())).filter(|p| p[1..p.len() - 1].parse::<usize>().is_ok()).collect();
+        found.sort();
+        found
+    }
+    /// Every tr()/trf() text in the sources is in all eight catalogs, with the same placeholders.
+    #[test] fn every_text_in_every_language() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut keys = std::collections::BTreeSet::new();
+        let mut dirs = vec![root];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() { dirs.push(path); continue; }
+                if path.extension().is_none_or(|e| e != "rs") || path.ends_with("translations_generated.rs") { continue; }
+                let source = std::fs::read_to_string(&path).unwrap();
+                for start in ["tr(\"", "trf(\""] {
+                    for (i, _) in source.match_indices(start) {
+                        if source[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_') { continue; }
+                        let rest = &source[i + start.len() - 1..];
+                        let mut de = serde_json::Deserializer::from_str(rest).into_iter::<String>();
+                        if let Some(Ok(key)) = de.next() { keys.insert(key); }
+                    }
+                }
+            }
+        }
+        assert!(keys.len() > 30, "{}", keys.len());
+        for (index, (code, _)) in LANGUAGES.iter().enumerate() {
+            for key in &keys {
+                let text = CATALOGS[index][key.as_str()].as_str().unwrap_or_else(|| panic!("{code}: {key}"));
+                assert_eq!(placeholders(key), placeholders(text), "{code}: {key}");
+            }
+        }
+    }
+    /// src/translations_generated.rs is what tools/gen-translations makes of translations/.
+    #[test] fn generated_catalogs_are_current() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (index, (code, _)) in LANGUAGES.iter().enumerate() {
+            let file: Value = serde_json::from_slice(&std::fs::read(root.join(format!("translations/{code}.json"))).unwrap()).unwrap();
+            assert_eq!(file, CATALOGS[index], "{code}: run tools/gen-translations");
+        }
+    }
 }

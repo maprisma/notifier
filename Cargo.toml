@@ -6,6 +6,10 @@ license = "MIT"
 description = "Notification centre for COSMIC, KDE and Hyprland: history, unread count and do not disturb"
 
 [[bin]]
+name = "maprisma-notifier-tray"
+path = "src/tray/main.rs"
+
+[[bin]]
 name = "maprisma-notifier-recorder"
 path = "src/recorder/main.rs"
 

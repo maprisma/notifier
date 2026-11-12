@@ -65,10 +65,11 @@ pub fn format_time(minutes: u32) -> String {
     format!("{:02}:{:02}", (minutes / 60) % 24, minutes % 60)
 }
 
-/// A whole number within `(min, default, max)`; not a number is the default.
+/// A whole number clamped to `(min, default, max)`; a fraction or not a number is the default
+/// (the same rule as Maprisma Manager's Notifications page).
 fn bounded(value: &Value, (min, default, max): (u32, u32, u32)) -> u32 {
-    match value.as_f64().filter(|v| v.is_finite()) {
-        Some(v) => (v.round().clamp(min as f64, max as f64)) as u32,
+    match value.as_f64().filter(|v| v.is_finite() && v.fract() == 0.0) {
+        Some(v) => v.clamp(min as f64, max as f64) as u32,
         None => default,
     }
 }
@@ -209,7 +210,9 @@ mod tests {
         assert_eq!((s.language.as_str(), s.corners.as_str()), ("de", "square"));
         assert_eq!(parse(&json!({"history_max": 99999, "history_days": 0})).history_max, 5000);
         assert_eq!(parse(&json!({"history_days": 0})).history_days, 1);
-        assert_eq!(parse(&json!({"history_max": 120.4})).history_max, 120);
+        assert_eq!(parse(&json!({"history_max": 120.4})).history_max, 500);
+        assert_eq!(parse(&json!({"history_max": 120.0, "history_days": 2.5})).history_max, 120);
+        assert_eq!(parse(&json!({"history_days": 2.5})).history_days, 7);
     }
 
     #[test]

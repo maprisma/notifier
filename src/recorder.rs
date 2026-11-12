@@ -116,8 +116,13 @@ pub async fn run(target: Option<crate::dnd::Target>) -> i32 {
     let mut settings_stamp = stamp(&settings_path);
     let mut current = settings::load();
     let mut kde = crate::dnd::Kde::default();
+    // Written only when the effective state changes (the switch, a schedule boundary): a change
+    // made on the desktop itself or by Maprisma Manager is not fought. Only Plasma's
+    // inhibition, which lives with this connection, is taken at once.
     let mut applied = settings::effective_dnd(&current, settings::local_minutes());
-    apply(target, applied, &connection, &mut kde).await;
+    if applied && target == Some(crate::dnd::Target::Kde) {
+        apply(target, true, &connection, &mut kde).await;
+    }
 
     let mut pending: HashMap<(String, u32), Pending> = HashMap::new();
     let mut tick = tokio::time::interval(TICK);
@@ -330,6 +335,38 @@ mod tests {
 
         recorder.abort();
         settings::set("hidden_apps", None).unwrap();
+        settings::set("dnd", None).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run under dbus-run-session with --ignored"]
+    async fn shell_written_only_on_changes() {
+        let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::paths::test_roots();
+        let client = zbus::Connection::session().await.unwrap();
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        // The other test's recorder may still be going away.
+        for _ in 0..100 {
+            if !dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let shell = crate::paths::shell_file();
+        std::fs::create_dir_all(shell.parent().unwrap()).unwrap();
+        std::fs::write(&shell, r#"{"notifications": {"dnd": false, "timeout": 8}}"#).unwrap();
+        settings::set("dnd_schedule", None).unwrap();
+        settings::set("dnd", Some(true.into())).unwrap();
+        let read = || serde_json::from_slice::<serde_json::Value>(&std::fs::read(crate::paths::shell_file()).unwrap()).unwrap();
+        let recorder = tokio::spawn(run(Some(crate::dnd::Target::Shell)));
+        // At start nothing is written: the desktop's own (manual) state stays.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(read()["notifications"]["dnd"], false);
+        // The effective state changes: off (already off), then on again.
+        settings::set("dnd", Some(false.into())).unwrap();
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        settings::set("dnd", Some(true.into())).unwrap();
+        wait_for("shell dnd", || read()["notifications"]["dnd"] == true).await;
+        assert_eq!(read()["notifications"]["timeout"], 8);
+        recorder.abort();
         settings::set("dnd", None).unwrap();
     }
 }
