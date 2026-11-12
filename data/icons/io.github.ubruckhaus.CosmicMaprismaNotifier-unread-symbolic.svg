@@ -1,6 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><defs><style type="text/css" id="current-color-scheme">.ColorScheme-Text { color:#232629; }</style></defs>
-  <path class="ColorScheme-Text" fill="currentColor" d="M3.40 7.20 L3.49 6.30 L3.75 5.44 L4.18 4.64 L4.75 3.95 L5.44 3.38 L6.24 2.95 L7.10 2.69 L8.00 2.60 L8.24 2.62 L12.60 7.81 L12.60 10.20 L14.00 12.20 L14.00 13.00 L2.00 13.00 L2.00 12.20 L3.40 10.20Z"/>
-  <path class="ColorScheme-Text" fill="currentColor" d="M8.76 3.24 L8.55 3.45 L8.00 3.60 L7.45 3.45 L7.05 3.05 L6.90 2.50 L7.05 1.95 L7.39 1.61Z"/>
-  <path class="ColorScheme-Text" fill="currentColor" d="M6.20 14.00 L9.80 14.00 L9.80 14.00 L9.66 14.69 L9.27 15.27 L8.69 15.66 L8.00 15.80 L7.31 15.66 L6.73 15.27 L6.34 14.69 L6.20 14.00Z"/>
-  <path class="ColorScheme-Text" fill="currentColor" d="M15.40 3.00 L15.22 3.92 L14.70 4.70 L13.92 5.22 L13.00 5.40 L12.08 5.22 L11.30 4.70 L10.78 3.92 L10.60 3.00 L10.78 2.08 L11.30 1.30 L12.08 0.78 L13.00 0.60 L13.92 0.78 L14.70 1.30 L15.22 2.08 L15.40 3.00Z"/>
+  <path fill="currentColor" fill-rule="evenodd" class="ColorScheme-Text" d="M8 1c.55 0 1 .45 1 1v.45c2.05.45 3.5 2.3 3.5 4.55v2.55l1.25 1.75c.45.65 0 1.45-.75 1.45H3c-.75 0-1.2-.8-.75-1.45L3.5 9.55V7c0-2.25 1.45-4.1 3.5-4.55V2c0-.55.45-1 1-1zm0 3C6.35 4 5 5.35 5 7v3.05L4.35 11h7.3L11 10.05V7c0-1.65-1.35-3-3-3z"/>
+  <path fill="currentColor" class="ColorScheme-Text" d="M6.25 13.5h3.5a1.75 1.75 0 0 1-3.5 0z"/>
+  <circle fill="currentColor" class="ColorScheme-Text" cx="13.6" cy="2.4" r="2.2"/>
 </svg>
