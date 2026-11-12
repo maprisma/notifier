@@ -1,6 +1,10 @@
 //! The recorder: watches the session bus read-only (`BecomeMonitor`), writes what it sees to the
 //! history and applies do not disturb on this desktop. One per session (the D-Bus name
-//! [NAME], DoNotQueue). It never answers, changes or sends a notification itself.
+//! [NAME], DoNotQueue). It never answers or changes another app's notification; the only ones it
+//! sends are its own crash reports (crash.rs): it follows systemd-coredump's journal entries
+//! (`journalctl -f`, a child that ends with it) and opens Details / Check with AI when their
+//! actions are invoked. Its own notifications reach the history like any other, through the
+//! monitor.
 //!
 //! The tray (KDE, Hyprland) and the applet (COSMIC) start it with [supervise]; it ends with them
 //! (PR_SET_PDEATHSIG). Started by hand it runs until the bus goes away.
@@ -8,7 +12,8 @@
 use crate::notify::{self, Event};
 use crate::settings::{self, Settings};
 use futures_util::StreamExt;
-use std::collections::HashMap;
+use crate::crash::{self, Crash};
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const NAME: &str = "io.github.ubruckhaus.CosmicMaprismaNotifier.Recorder";
@@ -76,8 +81,156 @@ async fn apply(target: Option<crate::dnd::Target>, on: bool, connection: &zbus::
     }
 }
 
-/// Runs the recorder; returns the process exit code.
+/// `journalctl` following systemd-coredump's entries from now on.
+pub fn journal_argv() -> Vec<String> {
+    ["journalctl", "-f", "-o", "json", "-n", "0", "--no-pager"].into_iter().map(String::from).chain([format!("MESSAGE_ID={}", crash::MESSAGE_ID)]).collect()
+}
+
+/// Aborts a task when dropped (the journal follower ends with the recorder).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Runs `argv` (journalctl) and sends the user's crashes it prints; started again when it ends
+/// (5 s, doubling up to 5 min; back to 5 s after a long run). Missing journalctl: crash reports
+/// are off (logged once). The child is killed with this task and gets SIGTERM when the recorder
+/// dies.
+async fn follow_journal(argv: Vec<String>, sender: tokio::sync::mpsc::Sender<Crash>) {
+    use tokio::io::AsyncBufReadExt;
+    let Some((program, args)) = argv.split_first() else { return };
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let mut delay = Duration::from_secs(5);
+    loop {
+        let mut command = tokio::process::Command::new(program);
+        command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let started = Instant::now();
+        match command.spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("maprisma-notifier-recorder: {program} not found: crash reports are off");
+                return;
+            }
+            Err(error) => eprintln!("maprisma-notifier-recorder: {program}: {error}"),
+            Ok(mut child) => {
+                if let Some(out) = child.stdout.take() {
+                    let mut lines = tokio::io::BufReader::new(out).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if let Some(found) = crash::parse_line(&line, uid, settings::now_unix())
+                            && sender.send(found).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                let _ = child.wait().await;
+            }
+        }
+        if started.elapsed() > Duration::from_secs(300) {
+            delay = Duration::from_secs(5);
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(300));
+    }
+}
+
+/// The recorder's own crash notifications, by the server's id (for their actions).
+#[derive(Default)]
+struct Reports {
+    coalescer: crash::Coalescer,
+    by_id: HashMap<u32, Crash>,
+    order: VecDeque<u32>,
+    started: Option<Instant>,
+}
+
+impl Reports {
+    fn remember(&mut self, id: u32, crash: Crash) {
+        if id == 0 {
+            return;
+        }
+        if self.by_id.insert(id, crash).is_none() {
+            self.order.push_back(id);
+        }
+        while self.order.len() > 100 {
+            if let Some(old) = self.order.pop_front() {
+                self.by_id.remove(&old);
+            }
+        }
+    }
+
+    /// One crash: a notification (or an update of the program's last one), unless crash reports
+    /// are off or too many came in the last minute.
+    async fn report(&mut self, mut crash: Crash, settings: &Settings, connection: &zbus::Connection) {
+        if !settings.notify_crashes {
+            return;
+        }
+        let key = if crash.exe.is_empty() { crash.name.clone() } else { crash.exe.clone() };
+        let now = self.started.get_or_insert_with(Instant::now).elapsed().as_millis() as u64;
+        let (count, replaces_id) = match self.coalescer.decide(&key, now) {
+            crash::Decision::Drop => return,
+            crash::Decision::New => (1, 0),
+            crash::Decision::Update { replaces_id, count } => (count, replaces_id),
+        };
+        let exe = crash.exe.clone();
+        let (name, ai) = tokio::task::spawn_blocking(move || (crash::desktop_name(&exe, &crash::application_dirs()), !crate::helpers::installed().is_empty()))
+            .await
+            .unwrap_or((None, false));
+        if let Some(name) = name {
+            crash.name = name;
+        }
+        let a = crash::notify_args(&crash, count, replaces_id, ai);
+        let body = (a.app_name.as_str(), a.replaces_id, a.app_icon.as_str(), a.summary.as_str(), a.body.as_str(), &a.actions, &a.hints, a.timeout);
+        let call = connection.call_method(Some(notify::INTERFACE), notify::PATH, Some(notify::INTERFACE), "Notify", &body);
+        let id = match tokio::time::timeout(Duration::from_secs(5), call).await {
+            Ok(Ok(reply)) => reply.body().deserialize::<u32>().unwrap_or(0),
+            Ok(Err(error)) => {
+                eprintln!("maprisma-notifier-recorder: crash notification: {error}");
+                0
+            }
+            Err(_) => {
+                eprintln!("maprisma-notifier-recorder: crash notification: no answer");
+                0
+            }
+        };
+        self.coalescer.sent(&key, id);
+        self.remember(id, crash);
+    }
+
+    /// Details / Check with AI on one of ours.
+    fn action(&self, id: u32, key: &str, settings: &Settings) {
+        let Some(crash) = self.by_id.get(&id).cloned() else { return };
+        let helper = settings.ai_helper.clone();
+        let key = key.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let result = match key.as_str() {
+                crash::ACTION_DETAILS => crash::open_details(&crash),
+                crash::ACTION_AI => crash::open_ai(&crash, &helper),
+                _ => return,
+            };
+            if let Err(error) = result {
+                eprintln!("maprisma-notifier-recorder: {key}: {error}");
+            }
+        });
+    }
+}
+
+/// Runs the recorder with crash reports; returns the process exit code.
 pub async fn run(target: Option<crate::dnd::Target>) -> i32 {
+    run_with(target, Some(journal_argv())).await
+}
+
+/// The recorder; `journal`: the command printing coredump entries (None: no crash reports).
+pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<String>>) -> i32 {
     let connection = match zbus::Connection::session().await {
         Ok(c) => c,
         Err(error) => {
@@ -124,6 +277,10 @@ pub async fn run(target: Option<crate::dnd::Target>) -> i32 {
         apply(target, true, &connection, &mut kde).await;
     }
 
+    let (crash_sender, mut crashes) = tokio::sync::mpsc::channel::<Crash>(32);
+    let _follower = journal.map(|argv| AbortOnDrop(tokio::spawn(follow_journal(argv, crash_sender.clone()))));
+    let mut reports = Reports::default();
+
     let mut pending: HashMap<(String, u32), Pending> = HashMap::new();
     let mut tick = tokio::time::interval(TICK);
     loop {
@@ -143,10 +300,15 @@ pub async fn run(target: Option<crate::dnd::Target>) -> i32 {
                     }
                     Some(Event::Closed { id, .. }) => { let _ = crate::history::mark_closed(id, false); }
                     // The user clicked it: seen.
-                    Some(Event::Action { id }) => { let _ = crate::history::mark_closed(id, true); }
+                    Some(Event::Action { id, key }) => {
+                        let _ = crate::history::mark_closed(id, true);
+                        reports.action(id, &key, &current);
+                    }
                     None => {}
                 }
             }
+            // crash_sender is held here, so this never ends.
+            Some(found) = crashes.recv() => reports.report(found, &current, &connection).await,
             _ = tick.tick() => {
                 let stale: Vec<(String, u32)> = pending.iter().filter(|(_, p)| p.at.elapsed() >= REPLY_WAIT).map(|(k, _)| k.clone()).collect();
                 for key in stale {
@@ -233,12 +395,15 @@ mod tests {
     struct FakeServer {
         next: std::sync::atomic::AtomicU32,
         inhibited: std::sync::Arc<std::sync::atomic::AtomicI32>,
+        /// (app, replaces, summary, actions) of every Notify.
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, u32, String, Vec<String>)>>>,
     }
 
     #[zbus::interface(name = "org.freedesktop.Notifications")]
     impl FakeServer {
         #[allow(clippy::too_many_arguments)]
-        fn notify(&self, _app: String, replaces: u32, _icon: String, _summary: String, _body: String, _actions: Vec<String>, _hints: HashMap<String, zbus::zvariant::OwnedValue>, _timeout: i32) -> u32 {
+        fn notify(&self, app: String, replaces: u32, _icon: String, summary: String, _body: String, actions: Vec<String>, _hints: HashMap<String, zbus::zvariant::OwnedValue>, _timeout: i32) -> u32 {
+            self.calls.lock().unwrap().push((app, replaces, summary, actions));
             if replaces != 0 { replaces } else { self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) }
         }
         fn inhibit(&self, _entry: String, _reason: String, _hints: HashMap<String, zbus::zvariant::OwnedValue>) -> u32 {
@@ -284,12 +449,12 @@ mod tests {
             .unwrap()
             .name(notify::INTERFACE)
             .unwrap()
-            .serve_at(notify::PATH, FakeServer { next: 100.into(), inhibited: inhibited.clone() })
+            .serve_at(notify::PATH, FakeServer { next: 100.into(), inhibited: inhibited.clone(), calls: Default::default() })
             .unwrap()
             .build()
             .await
             .unwrap();
-        let recorder = tokio::spawn(run(Some(crate::dnd::Target::Kde)));
+        let recorder = tokio::spawn(run_with(Some(crate::dnd::Target::Kde), None));
         // One recorder per session.
         let client = zbus::Connection::session().await.unwrap();
         let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
@@ -297,7 +462,7 @@ mod tests {
             if dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert_eq!(tokio::time::timeout(Duration::from_secs(5), run(None)).await.unwrap(), EXIT_TAKEN);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), run_with(None, None)).await.unwrap(), EXIT_TAKEN);
         // dnd on: Plasma's inhibition is held.
         let held = inhibited.clone();
         wait_for("inhibit", || held.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
@@ -356,7 +521,7 @@ mod tests {
         settings::set("dnd_schedule", None).unwrap();
         settings::set("dnd", Some(true.into())).unwrap();
         let read = || serde_json::from_slice::<serde_json::Value>(&std::fs::read(crate::paths::shell_file()).unwrap()).unwrap();
-        let recorder = tokio::spawn(run(Some(crate::dnd::Target::Shell)));
+        let recorder = tokio::spawn(run_with(Some(crate::dnd::Target::Shell), None));
         // At start nothing is written: the desktop's own (manual) state stays.
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert_eq!(read()["notifications"]["dnd"], false);
@@ -368,5 +533,70 @@ mod tests {
         assert_eq!(read()["notifications"]["timeout"], 8);
         recorder.abort();
         settings::set("dnd", None).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run under dbus-run-session with --ignored"]
+    async fn a_crash_line_becomes_one_notification_and_one_entry() {
+        let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::paths::test_roots();
+        let _ = std::fs::remove_file(crate::paths::history_file());
+        for key in ["hidden_apps", "dnd", "dnd_schedule", "notify_crashes"] {
+            settings::set(key, None).unwrap();
+        }
+        let client = zbus::Connection::session().await.unwrap();
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        for _ in 0..100 {
+            if !dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let _server = zbus::connection::Builder::session()
+            .unwrap()
+            .name(notify::INTERFACE)
+            .unwrap()
+            .serve_at(notify::PATH, FakeServer { next: 200.into(), inhibited: Default::default(), calls: calls.clone() })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let line = |pid: u32, who: u32| format!(r#"{{"MESSAGE_ID":"{}","COREDUMP_EXE":"/usr/bin/notifier-test-crasher","COREDUMP_COMM":"crasher","COREDUMP_SIGNAL_NAME":"SIGSEGV","COREDUMP_UID":"{who}","COREDUMP_PID":"{pid}","__REALTIME_TIMESTAMP":"1794557523000000"}}"#, crash::MESSAGE_ID);
+        // Garbage, another user's crash, ours; then (a second later) ours again.
+        let script = format!("echo garbage; echo '{}'; echo '{}'; sleep 1; echo '{}'; exec sleep 60", line(5, uid + 1), line(6, uid), line(7, uid));
+        let recorder = tokio::spawn(run_with(None, Some(vec!["sh".into(), "-c".into(), script])));
+
+        wait_for("one entry", || crate::history::load().len() == 1).await;
+        let list = crate::history::load();
+        let entry = &list[0];
+        assert_eq!((entry.app.as_str(), entry.icon.as_str(), entry.server_id), ("Crashes", "dialog-error", 200));
+        assert_eq!(entry.summary, "crasher crashed");
+        assert_eq!(entry.crash.as_ref().map(|c| c.pid), Some(6));
+        // The second crash updates the same notification and entry.
+        wait_for("updated", || crate::history::load().first().is_some_and(|e| e.summary == "crasher crashed 2 times")).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let list = crate::history::load();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].crash.as_ref().map(|c| c.pid), Some(7));
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!((calls[0].0.as_str(), calls[0].1), ("Crashes", 0));
+        assert_eq!(calls[1].1, 200);
+        assert_eq!(&calls[0].3[..2], ["details", "Details"]);
+
+        // Turned off: nothing more is sent.
+        recorder.abort();
+        settings::set("notify_crashes", Some(false.into())).unwrap();
+        for _ in 0..100 {
+            if !dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let script = format!("echo '{}'; exec sleep 60", line(8, uid));
+        let recorder = tokio::spawn(run_with(None, Some(vec!["sh".into(), "-c".into(), script])));
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(crate::history::load().len(), 1);
+        recorder.abort();
+        settings::set("notify_crashes", None).unwrap();
     }
 }

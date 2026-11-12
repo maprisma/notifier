@@ -12,10 +12,16 @@ showing the popups. Maprisma Notifier records what they show and keeps it in a h
 - **Popup / window:** the history grouped by app (the app with the newest notification first,
   newest first inside), an unread dot before new ones (red for critical ones; a click marks one
   read), *Clear* per app, *Mark all read*, *Clear all* (asks first), the **Do not disturb** switch
-  with the schedule, Language, Corners, *F12 saves a screenshot* and *Notification settings…*
+  with the schedule, Language, Corners, *F12 saves a screenshot*, *AI helper* (when one is
+  installed) and *Notification settings…*
   (Maprisma Manager's Notifications page).
 - **Do not disturb:** the switch, or a daily schedule (e.g. 22:00–07:00, across midnight), see
   below.
+- **Crashes:** when one of your programs crashes, a notification "*program* crashed" (app
+  *Crashes*; the same program again within a minute counts up "crashed N times"). *Details* opens
+  a terminal with `coredumpctl info`; *Check with AI* (when an AI helper such as Claude Code or
+  Codex is installed) opens the helper in a terminal, asked to explain the crash and to change
+  nothing without asking. Crash entries in the window have the same two buttons.
 
 Languages: English, Deutsch, Français, Español, Italiano, Português, Nederlands, Polski (*Language*
 in the popup or the tray menu; *System* follows the locale).
@@ -35,8 +41,8 @@ settings…*, *Language*, *Quit tray*.
 
 `maprisma-notifier-recorder` watches the session bus **read-only** (D-Bus
 `BecomeMonitor` with filters for `org.freedesktop.Notifications.Notify` calls, the server's
-replies and its `NotificationClosed` / `ActionInvoked` signals). It never answers, changes or
-sends a notification. It runs once per session (D-Bus name
+replies and its `NotificationClosed` / `ActionInvoked` signals). It never answers or changes
+another app's notification; the only ones it sends are its own crash reports (below). It runs once per session (D-Bus name
 `io.github.ubruckhaus.CosmicMaprismaNotifier.Recorder`); the applet (COSMIC) or the tray (KDE,
 Hyprland) starts it and it ends with them.
 
@@ -48,6 +54,15 @@ Hyprland) starts it and it ends with them.
   its window. The recorder writes it to the desktop (table above) **only when that changes** (the
   switch, a schedule boundary); a change made on the desktop itself stays until the next change.
   On KDE the inhibition ends with the recorder.
+- Crashes: the recorder follows systemd-coredump's journal entries
+  (`journalctl -f -o json MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1`, your own programs only;
+  no root needed) and sends the crash notification itself; it reaches the history like any other.
+  At most five crash notifications a minute. Off with `notify_crashes: false` (Maprisma
+  Manager: *Report app crashes*).
+- AI helpers come from `helpers.json` (shipped here; Maprisma's
+  `/usr/lib/maprisma/data/helpers.json` when it is newer): every helper with an interactive
+  *task* command whose program is installed (PATH, `~/.local/bin`, `~/.npm-global/bin` or mise).
+  The prompt is passed as one argument, never through a shell.
 
 ## Files
 
@@ -56,6 +71,7 @@ Hyprland) starts it and it ends with them.
 | `~/.config/maprisma-notifier/settings.json` | settings, shared with Maprisma Manager (every key optional; writers keep the others) |
 | `~/.local/state/maprisma-notifier/history.jsonl` | the history, one JSON object per line, `0600` |
 | `~/.local/state/maprisma-notifier/history.lock` | held while the history is rewritten |
+| `~/.local/share/maprisma-notifier/helpers.json` | the AI helpers catalog (installed copy of `data/helpers.json`, read by Maprisma Manager) |
 | `~/Pictures/Maprisma Notifier/` | F12 screenshots and their notes |
 
 ```json
@@ -70,10 +86,14 @@ Hyprland) starts it and it ends with them.
   "language": "system",
   "corners": "desktop",
   "screenshot_key": true,
+  "notify_crashes": true,
+  "ai_helper": "auto",
   "window_size": { "width": 420, "height": 640 }
 }
 ```
 
+- `notify_crashes`: crash notifications on or off. `ai_helper`: `"auto"` (the first installed
+  helper) or a helper id such as `"codex"` (not installed: automatic).
 - `history_max` 50–5000 entries, `history_days` 1–90; the oldest go first, and the file stays
   under 4 MB. Whole numbers only; anything else is the default.
 - `muted_apps`: recorded, but never counted as unread. `hidden_apps`: not recorded.
@@ -90,6 +110,7 @@ Needs Rust (edition 2024) and the libraries libcosmic builds against (Wayland, x
 It installs into `~/.local`:
 
 - `bin/maprisma-notifier`, `bin/maprisma-notifier-tray`, `bin/maprisma-notifier-recorder`
+- `share/maprisma-notifier/helpers.json`
 - `share/applications/io.github.ubruckhaus.CosmicMaprismaNotifier.desktop` (the COSMIC applet) and
   `….Window.desktop` (the window)
 - `share/icons/hicolor/scalable/apps/io.github.ubruckhaus.CosmicMaprismaNotifier{,-unread,-dnd}-symbolic.svg`

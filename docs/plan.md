@@ -34,6 +34,8 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
   "language": "system",
   "corners": "desktop",
   "screenshot_key": true,
+  "notify_crashes": true,
+  "ai_helper": "auto",
   "window_size": { "width": 420, "height": 640 }
 }
 ```
@@ -45,6 +47,9 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
 - `muted_apps`: app names (the Notify `app_name`) whose notifications are recorded but never count
   as unread. `hidden_apps`: not recorded at all.
 - `history_max` 50–5000, `history_days` 1–90.
+- `notify_crashes`: crash reports (below) on/off. `ai_helper`: `"auto"` (the first installed
+  helper in the catalog's order) or a helper id (a plain name); an unknown or uninstalled id
+  counts as `"auto"`.
 
 ### History — `$XDG_STATE_HOME/maprisma-notifier/history.jsonl`
 
@@ -57,7 +62,60 @@ than `history_days`:
  "server_id": 42, "read": false, "closed": false}
 ```
 
+A crash report's entry (app `Crashes`) also has
+`"crash": {"pid": 4242, "exe": "/usr/bin/cat", "name": "cat", "signal": "SIGSEGV", "time": 1794557523}`
+(`time` Unix seconds); other entries have no `crash` key.
+
 `read` is changed by rewriting the file (atomic). Max file 4 MB. Images are not stored.
+
+### Crashes — reported by the recorder
+
+- The recorder runs `journalctl -f -o json -n 0 --no-pager MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1`
+  (systemd-coredump's "dumped core") as a child (killed with it, PR_SET_PDEATHSIG; started again
+  after 5 s, doubling up to 5 min, when it ends; no journalctl → crash reports off, logged once)
+  and takes only entries with `COREDUMP_UID` = its own uid.
+- Each crash: `org.freedesktop.Notifications.Notify` with app_name `Crashes`, icon
+  `dialog-error`, summary "<name> crashed" (name: the `.desktop` Name whose Exec runs
+  `COREDUMP_EXE`, else `COREDUMP_COMM`), body signal, exe and local time (markup-escaped),
+  urgency normal, hint `category` `crash`, hints `x-maprisma-crash-{pid,exe,name,signal,time}`
+  (they become the entry's `crash`), never `transient`; actions `details` ("Details") and,
+  when an AI helper is installed at that moment, `ai` ("Check with AI"). The monitor records it
+  like any notification (exactly once; `hidden_apps` with `Crashes` keeps it out of the history).
+- The same exe again within 60 s of its last crash updates that notification (`replaces_id`,
+  "<name> crashed N times"); at most 5 crash notifications (new or updated) per minute.
+- `notify_crashes: false` → nothing is sent. Do not disturb as for any notification: the server
+  (or Shell, or Plasma's inhibition) holds the popup back, the history keeps it.
+- `ActionInvoked` for one of its ids: `details` opens a terminal with
+  `sh -c 'coredumpctl info "$1" 2>&1 | less' sh <pid>`; `ai` opens a terminal with the chosen
+  helper's task command and the prompt below. The window shows the same two buttons on crash
+  entries. Terminal: `xdg-terminal-exec` (when `--print-id` finds one), else `$TERMINAL` (a plain
+  program name), else the first of kgx, ptyxis, gnome-terminal, konsole, cosmic-term,
+  xfce4-terminal, foot, alacritty, kitty, wezterm, xterm. Working folder: home.
+- Prompt (UI language): "<name> (<exe>) crashed with <signal> at <time>, PID <pid>. Read
+  `coredumpctl info <pid>` (and use `coredumpctl debug` only if needed), explain the likely cause
+  in plain words and suggest what I can do. Don't change anything on my system without asking me
+  first."
+
+### AI helpers — `helpers.json`
+
+```json
+{"version": 1, "helpers": [
+  {"id": "claude", "name": "Claude Code", "command": "claude",
+   "ask": {"argv": ["claude", "-p", "…", "{prompt}"], "stdin": false},
+   "task": {"argv": ["claude", "{prompt}"]}, "verified": true}
+]}
+```
+
+- Made from Maprisma's agent adapters; list order = preference order. Shipped as
+  `data/helpers.json` (built in, and installed to `~/.local/share/maprisma-notifier/helpers.json`);
+  `/usr/lib/maprisma/data/helpers.json` is used instead when it parses and its `version` is ≥ the
+  shipped one.
+- Offered: every helper with a `task` (argv with a `{prompt}` element, not first) whose
+  `command` is installed: on PATH, in `~/.local/bin` or `~/.npm-global/bin`, else
+  `mise which <command>`. Nothing that would install it is run. Entries with a bad id/command
+  (not a plain name) or task are skipped.
+- `{prompt}` is replaced inside single argv elements (never a shell); a lone prompt element that
+  would start with `-` gets a leading space.
 
 ### Do not disturb — applied per desktop by the recorder (and the Manager)
 
@@ -87,7 +145,10 @@ than `history_days`:
   KDE tray `maprisma-notifier` with autostart `OnlyShowIn=KDE;`, Hyprland via the same tray; data
   `{config}/maprisma-notifier`, `{state}/maprisma-notifier`).
 - Settings category **Notifications** (sidebar, between Sound and Power): do not disturb (switch +
-  schedule from/to), history length (entries, days), show the unread count, muted and hidden apps
+  schedule from/to), history length (entries, days), show the unread count, *Report app crashes*
+  (`notify_crashes`) and the AI helper for *Check with AI* (`ai_helper`, the installed helpers of
+  the newer of `~/.local/share/maprisma-notifier/helpers.json` and
+  `/usr/lib/maprisma/data/helpers.json`), muted and hidden apps
   (from the history's app names), *Clear history*; on Hyprland also Shell's popup position,
   timeout and max; on COSMIC/KDE a button that opens the desktop's own notification settings
   (`cosmic-settings notifications` / `systemsettings kcm_notifications`). Reads/writes the files

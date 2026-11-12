@@ -31,6 +31,9 @@ pub struct Entry {
     pub read: bool,
     #[serde(default)]
     pub closed: bool,
+    /// A crash report (app "Crashes", see crash.rs): what Details and Check with AI need.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash: Option<crate::crash::Crash>,
 }
 
 fn normal() -> u8 {
@@ -381,6 +384,7 @@ pub(crate) mod tests {
             server_id: 0,
             read,
             closed: false,
+            crash: None,
         }
     }
 

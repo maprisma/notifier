@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "helpers": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "command": "claude",
+      "ask": { "argv": ["claude", "-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "{prompt}"], "stdin": false },
+      "task": { "argv": ["claude", "{prompt}"] },
+      "verified": true
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "command": "codex",
+      "ask": { "argv": ["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "{prompt}"], "stdin": false },
+      "task": { "argv": ["codex", "{prompt}"] },
+      "verified": true
+    }
+  ]
+}

@@ -32,6 +32,10 @@ pub struct Settings {
     pub language: String,
     pub corners: String,
     pub screenshot_key: bool,
+    /// Crash reports as notifications (app "Crashes").
+    pub notify_crashes: bool,
+    /// "Check with AI": "auto" (the first installed helper) or a helper id.
+    pub ai_helper: String,
 }
 
 impl Default for Settings {
@@ -47,6 +51,8 @@ impl Default for Settings {
             language: "system".into(),
             corners: "desktop".into(),
             screenshot_key: true,
+            notify_crashes: true,
+            ai_helper: "auto".into(),
         }
     }
 }
@@ -105,6 +111,8 @@ pub fn parse(value: &Value) -> Settings {
         language: language.into(),
         corners: crate::corners::normalize(value.get("corners").and_then(Value::as_str).unwrap_or("")).into(),
         screenshot_key: flag("screenshot_key", d.screenshot_key),
+        notify_crashes: flag("notify_crashes", d.notify_crashes),
+        ai_helper: value.get("ai_helper").and_then(Value::as_str).filter(|h| crate::helpers::valid_setting(h)).unwrap_or(&d.ai_helper).into(),
     }
 }
 
@@ -190,7 +198,8 @@ mod tests {
         assert_eq!(parse(&json!("nonsense")), Settings::default());
         let broken = json!({"dnd": "yes", "dnd_schedule": {"on": 1, "from": "25:00", "to": "7"},
             "history_max": "many", "history_days": null, "muted_apps": "Firefox", "show_count": 0,
-            "language": "xx", "corners": "wobbly", "screenshot_key": "no"});
+            "language": "xx", "corners": "wobbly", "screenshot_key": "no", "notify_crashes": "off",
+            "ai_helper": "../x"});
         assert_eq!(parse(&broken), Settings::default());
     }
 
@@ -208,6 +217,12 @@ mod tests {
         assert_eq!(s.hidden_apps, vec!["Spotify"]);
         assert!(!s.show_count && !s.screenshot_key);
         assert_eq!((s.language.as_str(), s.corners.as_str()), ("de", "square"));
+        assert!(s.notify_crashes);
+        assert_eq!(s.ai_helper, "auto");
+        let s = parse(&json!({"notify_crashes": false, "ai_helper": "codex"}));
+        assert!(!s.notify_crashes);
+        assert_eq!(s.ai_helper, "codex");
+        assert_eq!(parse(&json!({"ai_helper": 3})).ai_helper, "auto");
         assert_eq!(parse(&json!({"history_max": 99999, "history_days": 0})).history_max, 5000);
         assert_eq!(parse(&json!({"history_days": 0})).history_days, 1);
         assert_eq!(parse(&json!({"history_max": 120.4})).history_max, 500);

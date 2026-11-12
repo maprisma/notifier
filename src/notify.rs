@@ -21,6 +21,8 @@ pub struct Notify {
     pub desktop_entry: String,
     /// The `transient` hint: not meant to stay in a history.
     pub transient: bool,
+    /// The crash a "Crashes" notification is about (its x-maprisma-crash-* hints).
+    pub crash: Option<crate::crash::Crash>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,7 +32,7 @@ pub enum Event {
     /// A method return for `destination`'s call `reply_serial`; for a Notify, the server's id.
     Reply { destination: String, reply_serial: u32, server_id: Option<u32> },
     Closed { id: u32, reason: u32 },
-    Action { id: u32 },
+    Action { id: u32, key: String },
 }
 
 type Args = (String, u32, String, String, String, Vec<String>, HashMap<String, OwnedValue>, i32);
@@ -78,6 +80,16 @@ pub fn parse_notify(message: &Message) -> Option<Notify> {
         urgency: hint("urgency").and_then(number).map_or(1, |u| u.clamp(0, 2) as u8),
         desktop_entry: hint("desktop-entry").and_then(string).unwrap_or_default(),
         transient: hint("transient").and_then(boolean).unwrap_or(false),
+        crash: hint(crate::crash::HINT_PID).and_then(number).and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0).map(|pid| {
+            let text = |key: &str, limit: usize| crate::crash::clean(&hint(key).and_then(string).unwrap_or_default(), limit);
+            crate::crash::Crash {
+                pid,
+                exe: text(crate::crash::HINT_EXE, 512),
+                name: text(crate::crash::HINT_NAME, 64),
+                signal: text(crate::crash::HINT_SIGNAL, 64),
+                time: hint(crate::crash::HINT_TIME).and_then(number).unwrap_or(0),
+            }
+        }),
     })
 }
 
@@ -110,8 +122,8 @@ pub fn event(message: &Message) -> Option<Event> {
                     Some(Event::Closed { id, reason })
                 }
                 "ActionInvoked" => {
-                    let (id, _key): (u32, String) = message.body().deserialize().ok()?;
-                    Some(Event::Action { id })
+                    let (id, key): (u32, String) = message.body().deserialize().ok()?;
+                    Some(Event::Action { id, key })
                 }
                 _ => None,
             }
@@ -145,6 +157,8 @@ pub fn to_entry(n: &Notify, server_id: u32, now: i64) -> crate::history::Entry {
         server_id,
         read: false,
         closed: false,
+        // Only the recorder's own crash notifications carry a crash.
+        crash: n.crash.clone().filter(|_| app_label(n) == crate::crash::APP),
     }
 }
 
@@ -215,9 +229,32 @@ mod tests {
         let closed = Message::signal(PATH, INTERFACE, "NotificationClosed").unwrap().build(&(42u32, 2u32)).unwrap();
         assert_eq!(event(&closed), Some(Event::Closed { id: 42, reason: 2 }));
         let action = Message::signal(PATH, INTERFACE, "ActionInvoked").unwrap().build(&(42u32, "default")).unwrap();
-        assert_eq!(event(&action), Some(Event::Action { id: 42 }));
+        assert_eq!(event(&action), Some(Event::Action { id: 42, key: "default".into() }));
         let other = Message::signal(PATH, "org.example.Other", "NotificationClosed").unwrap().build(&(1u32, 1u32)).unwrap();
         assert_eq!(event(&other), None);
+    }
+
+    #[test]
+    fn crash_hints_reach_the_entry() {
+        let crash = crate::crash::Crash { pid: 31, exe: "/usr/bin/cat".into(), name: "cat".into(), signal: "SIGSEGV".into(), time: 1_794_557_523 };
+        let a = crate::crash::notify_args(&crash, 1, 0, true);
+        let build = |app: &str| {
+            Message::method_call(PATH, "Notify")
+                .unwrap()
+                .interface(INTERFACE)
+                .unwrap()
+                .build(&(app, a.replaces_id, a.app_icon.as_str(), a.summary.as_str(), a.body.as_str(), a.actions.clone(), a.hints.clone(), a.timeout))
+                .unwrap()
+        };
+        let n = parse_notify(&build(crate::crash::APP)).unwrap();
+        assert!(!n.transient);
+        assert_eq!(n.crash.as_ref(), Some(&crash));
+        let entry = to_entry(&n, 5, 0);
+        assert_eq!((entry.app.as_str(), entry.icon.as_str(), entry.summary.as_str()), ("Crashes", "dialog-error", "cat crashed"));
+        assert!(entry.body.starts_with("SIGSEGV\n/usr/bin/cat\n"), "{}", entry.body);
+        assert_eq!(entry.crash, Some(crash));
+        // Another app's hints don't make a crash entry.
+        assert_eq!(to_entry(&parse_notify(&build("Other")).unwrap(), 5, 0).crash, None);
     }
 
     #[test]

@@ -7,6 +7,8 @@ use cosmic::app::ApplicationExt;
 use maprisma_notifier::history::{self, Entry};
 use maprisma_notifier::i18n::{language_options, read_pref, set_language, tr, trf, write_pref};
 use maprisma_notifier::settings::{self, Settings};
+use maprisma_notifier::crash::{self, Crash};
+use maprisma_notifier::helpers::{self, Installed};
 use maprisma_notifier::{corners, shot};
 mod window_mode;
 mod window_size;
@@ -161,6 +163,12 @@ struct Notifier<const WINDOW_MODE: bool> {
     corners_open: bool,
     setting_error: bool,
     resize: window_size::Debounce,
+    // Check with AI: the installed helpers (looked up off the UI thread now and then), the list.
+    helpers: Vec<Installed>,
+    helper_open: bool,
+    ticks: u32,
+    // Details / Check with AI could not open a terminal: why.
+    open_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +200,12 @@ enum Message {
     SetShotKey(bool),
     ToggleCorners,
     Corners(String),
+    CrashDetails(Crash),
+    CrashAi(Crash),
+    Opened(Result<(), String>),
+    Helpers(Vec<Installed>),
+    ToggleHelper,
+    AiHelper(String),
 }
 
 /// What Esc does (layout rule 5a): the innermost open thing first, then the window or popup.
@@ -242,6 +256,37 @@ fn off_thread<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send
         let _ = sender.send(work());
     });
     Task::perform(receiver, move |result| cosmic::Action::App(done(result.unwrap_or_else(|_| Err("the file could not be written".into())))))
+}
+
+/// The installed AI helpers, off the UI thread (mise may be asked).
+fn load_helpers() -> Task<Message> {
+    off_thread(|| Ok(helpers::installed()), |result| Message::Helpers(result.unwrap_or_default()))
+}
+
+/// What the user reads when a terminal could not be opened.
+fn open_error_text(error: crash::OpenError) -> String {
+    match error {
+        crash::OpenError::NoTerminal => tr("No terminal found."),
+        crash::OpenError::NoHelper => tr("No AI helper is installed."),
+        crash::OpenError::Failed(reason) => trf("Could not open it: {0}", &[reason]),
+    }
+}
+
+/// The AI helper choices: Automatic (naming the one it picks), then every installed helper.
+fn helper_options(installed: &[Installed], selected: &str) -> Vec<(String, String)> {
+    let auto = match helpers::choose("auto", installed) {
+        Some(first) => trf("Automatic ({0})", &[first.helper.name.clone()]),
+        None => tr("Automatic"),
+    };
+    // A chosen helper that is gone counts as Automatic.
+    let selected = if installed.iter().any(|i| i.helper.id == selected) { selected } else { "auto" };
+    std::iter::once(("auto".to_owned(), auto))
+        .chain(installed.iter().map(|i| (i.helper.id.clone(), i.helper.name.clone())))
+        .map(|(id, label)| {
+            let label = if id == selected { format!("✓ {label}") } else { label };
+            (id, label)
+        })
+        .collect()
 }
 
 fn stamp(path: &std::path::Path) -> Option<(SystemTime, u64)> {
@@ -352,7 +397,14 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
         }
         let content = row![container(mark(entry, muted)).padding([6, 0, 0, 0]), words].spacing(8).align_y(Alignment::Start);
         let row_button = menu_button(content).padding([4, 8]);
-        if unread { row_button.on_press(Message::MarkRead(entry.id.clone())).into() } else { row_button.into() }
+        let row_button: Element<'a, Message> = if unread { row_button.on_press(Message::MarkRead(entry.id.clone())).into() } else { row_button.into() };
+        // A crash report: Details, and Check with AI when a helper is installed.
+        let Some(crash) = entry.crash.as_ref().filter(|_| entry.app == crash::APP) else { return row_button };
+        let mut buttons = row![button::text(tr("Details")).on_press(Message::CrashDetails(crash.clone()))].spacing(8);
+        if !self.helpers.is_empty() {
+            buttons = buttons.push(button::text(tr("Check with AI")).on_press(Message::CrashAi(crash.clone())));
+        }
+        column![row_button, container(buttons).padding([0, 8, 4, 24])].into()
     }
 
     fn history_view(&self) -> Element<'_, Message> {
@@ -443,9 +495,20 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
                 actions = actions.push(menu_button(text::body(label)).on_press(Message::Corners(choice.into())));
             }
         }
+        if !self.helpers.is_empty() {
+            actions = actions.push(menu_button(text::body(tr("AI helper"))).on_press(Message::ToggleHelper));
+            if self.helper_open {
+                for (id, label) in helper_options(&self.helpers, &self.settings.ai_helper) {
+                    actions = actions.push(menu_button(text::body(label)).on_press(Message::AiHelper(id)));
+                }
+            }
+        }
         actions = actions.push(menu_button(text::body(tr("Notification settings…"))).on_press(Message::OpenSettings));
         if self.setting_error {
             actions = actions.push(text::body(tr("Could not save the setting.")));
+        }
+        if let Some(error) = &self.open_error {
+            actions = actions.push(padded_control(text::body(error.clone())));
         }
         actions.into()
     }
@@ -565,9 +628,9 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             app.set_header_title(tr("Maprisma Notifier"));
             let id = app.core.main_window_id().unwrap();
             // The desktop's theme for the whole window (title bar too), see look.rs.
-            Task::batch([app.set_window_title(tr("Maprisma Notifier"), id), corners::set_app_theme(&app.settings.corners)])
+            Task::batch([app.set_window_title(tr("Maprisma Notifier"), id), corners::set_app_theme(&app.settings.corners), load_helpers()])
         } else {
-            Task::none()
+            load_helpers()
         };
         (app, task)
     }
@@ -614,12 +677,42 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
+                // The helpers once a minute (one may have been installed or removed).
+                self.ticks = self.ticks.wrapping_add(1);
+                let helpers = if self.ticks.is_multiple_of(30) { load_helpers() } else { Task::none() };
                 let mut restyle = self.reload(false);
                 // The desktop's colours and corners (Maprisma Theme can change them any time).
                 restyle |= maprisma_notifier::look::refresh();
                 if restyle && self.window_mode {
-                    return corners::set_app_theme(&self.settings.corners);
+                    return Task::batch([helpers, corners::set_app_theme(&self.settings.corners)]);
                 }
+                return helpers;
+            }
+            Message::CrashDetails(found) => {
+                return off_thread(move || crash::open_details(&found).map_err(open_error_text), Message::Opened);
+            }
+            Message::CrashAi(found) => {
+                let setting = self.settings.ai_helper.clone();
+                return off_thread(move || crash::open_ai(&found, &setting).map_err(open_error_text), Message::Opened);
+            }
+            Message::Opened(result) => self.open_error = result.err(),
+            Message::Helpers(found) => {
+                self.helpers = found;
+                if self.helpers.is_empty() {
+                    self.helper_open = false;
+                }
+            }
+            Message::ToggleHelper => {
+                self.helper_open = !self.helper_open;
+                self.language_open = false;
+                self.corners_open = false;
+            }
+            Message::AiHelper(id) => {
+                // Automatic is the default: no key in settings.json.
+                let value = (id != "auto").then(|| Value::from(id));
+                self.setting_error = write_pref("ai_helper", value).is_err();
+                self.helper_open = false;
+                self.reload(true);
             }
             Message::SetDnd(on) => {
                 self.setting_error = settings::set("dnd", Some(on.into())).is_err();
@@ -636,6 +729,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                 self.confirm_clear = true;
                 self.language_open = false;
                 self.corners_open = false;
+                self.helper_open = false;
             }
             Message::CancelClear => self.confirm_clear = false,
             Message::ClearAll => {
@@ -653,6 +747,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             Message::ToggleLanguage => {
                 self.language_open = !self.language_open;
                 self.corners_open = false;
+                self.helper_open = false;
             }
             Message::ShotKey(id) => {
                 let shown = if self.window_mode { self.core.main_window_id() == Some(id) } else { self.popup == Some(id) };
@@ -694,12 +789,13 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             },
             Message::Escape(id) => {
                 let shown = if self.window_mode { self.core.main_window_id() == Some(id) } else { self.popup == Some(id) };
-                match esc_step(self.shot.open(), self.confirm_clear, self.language_open || self.corners_open, shown) {
+                match esc_step(self.shot.open(), self.confirm_clear, self.language_open || self.corners_open || self.helper_open, shown) {
                     EscStep::Note => return self.finish_note(false),
                     EscStep::Confirm => self.confirm_clear = false,
                     EscStep::Menus => {
                         self.language_open = false;
                         self.corners_open = false;
+                        self.helper_open = false;
                     }
                     // Like the window's own close (the tray keeps running); the popup like a click on the icon.
                     EscStep::Close if self.window_mode => {
@@ -717,6 +813,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             Message::ToggleCorners => {
                 self.corners_open = !self.corners_open;
                 self.language_open = false;
+                self.helper_open = false;
             }
             Message::Corners(choice) => {
                 let choice = corners::normalize(&choice);
@@ -837,6 +934,19 @@ mod tests {
         assert_eq!(bar_icon(false, 0), ICON);
         assert_eq!(bar_icon(false, 3), ICON_UNREAD);
         assert_eq!(bar_icon(true, 3), ICON_DND);
+    }
+
+    #[test]
+    fn helper_choices() {
+        maprisma_notifier::paths::test_roots();
+        let catalog = helpers::parse(helpers::SHIPPED.as_bytes()).unwrap();
+        let installed: Vec<Installed> = catalog.helpers.iter().map(|h| Installed { helper: h.clone(), program: "/x".into() }).collect();
+        let options = helper_options(&installed, "codex");
+        assert_eq!(options[0], ("auto".to_owned(), "Automatic (Claude Code)".to_owned()));
+        assert_eq!(options[2], ("codex".to_owned(), "✓ Codex".to_owned()));
+        // A helper that is gone: Automatic is ticked.
+        assert_eq!(helper_options(&installed[..1], "codex")[0].1, "✓ Automatic (Claude Code)");
+        assert_eq!(helper_options(&[], "auto"), vec![("auto".to_owned(), "✓ Automatic".to_owned())]);
     }
 
     #[test]

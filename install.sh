@@ -5,6 +5,7 @@
 #   ~/.local/bin/maprisma-notifier-recorder   writes the history (started by the applet or tray)
 #   ~/.local/share/applications/…desktop      makes it an applet for the panel, and the window
 #   ~/.local/share/icons/hicolor/scalable/apps/…svg  the bell icons
+#   ~/.local/share/maprisma-notifier/helpers.json   the AI helpers (for Maprisma Manager too)
 #   ~/.config/autostart/…Tray.desktop         the tray on KDE and Hyprland
 # Then add it in COSMIC Settings › Desktop › Panel › Applets.
 set -euo pipefail
@@ -20,6 +21,7 @@ done
 for icon in "$id-symbolic" "$id-unread-symbolic" "$id-dnd-symbolic"; do
     install -Dm644 "data/icons/$icon.svg" "$data/icons/hicolor/scalable/apps/$icon.svg"
 done
+install -Dm644 data/helpers.json "$data/maprisma-notifier/helpers.json"
 # Desktop Exec has two escaping layers: quoted arguments, then string values.
 desktop_arg() {
     local v=$1
