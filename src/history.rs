@@ -147,6 +147,58 @@ pub fn strip_markup(text: &str) -> String {
     folded.trim().to_owned()
 }
 
+/// Terminal control sequences removed (a program's terminal output sent as a notification: OSC
+/// colour queries like `ESC ]10;rgb:…ESC \`, CSI colours like `ESC [1;31m`, charset switches),
+/// and every other control character but line breaks and tabs.
+pub fn strip_terminal(text: &str) -> String {
+    fn string_until_st(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+        while let Some(c) = chars.next() {
+            match c {
+                '\u{7}' | '\u{9c}' => break,
+                '\u{1b}' => {
+                    if chars.peek() == Some(&'\\') {
+                        chars.next();
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    fn csi(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+        for c in chars.by_ref() {
+            if ('@'..='~').contains(&c) {
+                break;
+            }
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                Some('[') => csi(&mut chars),
+                Some(']' | 'P' | 'X' | '^' | '_') => string_until_st(&mut chars),
+                // ESC, intermediates (' '..'/'), one final character: `ESC ( B`, `ESC 7` …
+                Some(i) if (' '..='/').contains(&i) => {
+                    for c in chars.by_ref() {
+                        if !(' '..='/').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\u{9b}' => csi(&mut chars),
+            '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => string_until_st(&mut chars),
+            '\n' | '\t' => out.push(c),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn entity(name: &str) -> Option<char> {
     match name {
         "amp" => Some('&'),
@@ -204,7 +256,20 @@ fn line(entry: &Entry) -> String {
 }
 
 pub fn parse_lines(bytes: &[u8]) -> Vec<Entry> {
-    String::from_utf8_lossy(bytes).lines().filter_map(|l| serde_json::from_str::<Entry>(l).ok()).collect()
+    // Entries stored before strip_terminal existed are cleaned as they are read.
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
+        .map(|mut e| {
+            if e.summary.contains(|c: char| c.is_control()) {
+                e.summary = strip_terminal(&e.summary).replace(['\n', '\t'], " ").trim().to_owned();
+            }
+            if e.body.contains(|c: char| c.is_control() && c != '\n' && c != '\t') {
+                e.body = strip_terminal(&e.body).trim().to_owned();
+            }
+            e
+        })
+        .collect()
 }
 
 pub fn load_from(path: &Path) -> Vec<Entry> {
@@ -374,6 +439,25 @@ pub(crate) mod tests {
     use super::*;
     /// Tests that use the (temporary) settings or history file run one at a time.
     pub static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn terminal_sequences_are_not_shown() {
+        // What a terminal program's output looked like in a notification body (KDE, COSMIC).
+        let osc = "\u{1b}]10;rgb:e0/e0/e0\u{1b}\\\u{1b}]11;rgb:1c/1c/1c\u{7}Build done";
+        assert_eq!(strip_terminal(osc), "Build done");
+        assert_eq!(strip_terminal("\u{1b}[1;31merror\u{1b}[0m: x\r\n\tnext"), "error: x\n\tnext");
+        assert_eq!(strip_terminal("\u{1b}(Bplain \u{9b}2Jtext\u{9d}0;title\u{9c}!"), "plain text!");
+        assert_eq!(strip_terminal("unterminated \u{1b}]0;never ends"), "unterminated ");
+        assert_eq!(strip_terminal("Grüße – ok"), "Grüße – ok");
+        // Stored before the fix: cleaned when read.
+        let mut e = entry("Local System", 0, false);
+        e.summary = "Hi\u{1b}[0m".into();
+        e.body = format!("{osc}\nmore");
+        let line = serde_json::to_string(&e).unwrap();
+        let back = parse_lines(line.as_bytes());
+        assert_eq!(back[0].summary, "Hi");
+        assert_eq!(back[0].body, "Build done\nmore");
+    }
 
     pub fn entry(app: &str, time: i64, read: bool) -> Entry {
         Entry {

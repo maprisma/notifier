@@ -99,8 +99,8 @@ impl Applied {
             Ok(()) => {
                 self.state = effective;
                 self.failing = false;
-                if matches!(target, Some(crate::dnd::Target::Shell | crate::dnd::Target::Cosmic)) {
-                    let _ = crate::dnd::remember_applied(effective);
+                if let Some(target) = target {
+                    let _ = crate::dnd::remember_applied(target, effective);
                 }
             }
             Err(error) => {
@@ -343,7 +343,8 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
     // is taken at once.
     let effective = settings::effective_dnd(&current, settings::local_minutes());
     let kde_target = target == Some(crate::dnd::Target::Kde);
-    let mut applied = Applied { state: start_state(kde_target, crate::dnd::last_applied(), effective), failing: false };
+    let last = target.and_then(crate::dnd::last_applied);
+    let mut applied = Applied { state: start_state(kde_target, last, effective), failing: false };
     applied.sync(effective, target, &connection, &mut kde).await;
 
     // The server's unique name: its NotificationClosed / ActionInvoked count only from it (any
@@ -500,14 +501,40 @@ mod tests {
 
     #[test]
     fn last_applied_dnd_is_remembered() {
+        use crate::dnd::Target::{Cosmic, Kde, Shell};
         let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::remove_file(crate::paths::dnd_applied_file());
-        assert_eq!(crate::dnd::last_applied(), None);
-        crate::dnd::remember_applied(true).unwrap();
-        assert_eq!(crate::dnd::last_applied(), Some(true));
-        crate::dnd::remember_applied(false).unwrap();
-        assert_eq!(crate::dnd::last_applied(), Some(false));
+        assert_eq!(crate::dnd::last_applied(Cosmic), None);
+        crate::dnd::remember_applied(Cosmic, true).unwrap();
+        assert_eq!(crate::dnd::last_applied(Cosmic), Some(true));
+        // Another desktop's state is its own: COSMIC's "on" says nothing about Maprisma Shell.
+        assert_eq!(crate::dnd::last_applied(Shell), None);
+        crate::dnd::remember_applied(Shell, false).unwrap();
+        assert_eq!(crate::dnd::last_applied(Shell), Some(false));
+        assert_eq!(crate::dnd::last_applied(Cosmic), Some(true));
+        crate::dnd::remember_applied(Cosmic, false).unwrap();
+        assert_eq!(crate::dnd::last_applied(Cosmic), Some(false));
+        crate::dnd::remember_applied(Kde, true).unwrap();
+        assert_eq!(crate::dnd::last_applied(Kde), None);
+        assert_eq!(crate::dnd::last_applied(Shell), Some(false));
         let _ = std::fs::remove_file(crate::paths::dnd_applied_file());
+    }
+
+    #[test]
+    fn applied_file_per_desktop() {
+        use crate::dnd::{Target, applied_in, with_applied};
+        // The old single value (whichever desktop wrote it) is unknown everywhere.
+        assert_eq!(applied_in("true", Target::Cosmic), None);
+        assert_eq!(applied_in("true", Target::Shell), None);
+        let text = with_applied("true", Target::Shell, true);
+        assert_eq!(text, "shell=true\n");
+        let text = with_applied(&text, Target::Cosmic, false);
+        assert_eq!(applied_in(&text, Target::Shell), Some(true));
+        assert_eq!(applied_in(&text, Target::Cosmic), Some(false));
+        let text = with_applied(&text, Target::Shell, false);
+        assert_eq!(text, "cosmic=false\nshell=false\n");
+        assert_eq!(applied_in("cosmic=maybe", Target::Cosmic), None);
+        assert_eq!(applied_in("cosmic=true", Target::Kde), None);
     }
 
     #[test]

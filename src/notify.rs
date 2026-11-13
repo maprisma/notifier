@@ -156,15 +156,15 @@ pub fn app_label(n: &Notify) -> String {
 
 /// The history entry for a notification (markup stripped, sizes capped, no images).
 pub fn to_entry(n: &Notify, server_id: u32, now: i64) -> crate::history::Entry {
-    use crate::history::{MAX_BODY, MAX_NAME, MAX_SUMMARY, cap, format_utc, new_id, strip_markup};
+    use crate::history::{MAX_BODY, MAX_NAME, MAX_SUMMARY, cap, format_utc, new_id, strip_markup, strip_terminal};
     let icon = if n.app_icon.trim().is_empty() { &n.desktop_entry } else { &n.app_icon };
     crate::history::Entry {
         id: new_id(),
         time: format_utc(now),
         app: cap(&app_label(n), MAX_NAME),
         icon: cap(icon.trim(), MAX_NAME),
-        summary: cap(&strip_markup(&n.summary).replace('\n', " "), MAX_SUMMARY),
-        body: cap(&strip_markup(&n.body), MAX_BODY),
+        summary: cap(&strip_markup(&strip_terminal(&n.summary)).replace(['\n', '\t'], " "), MAX_SUMMARY),
+        body: cap(&strip_markup(&strip_terminal(&n.body)), MAX_BODY),
         urgency: n.urgency,
         server_id,
         read: false,

@@ -92,17 +92,57 @@ pub enum Target {
     Kde,
 }
 
-/// The state last applied on COSMIC/Hyprland (None: unknown).
-pub fn last_applied() -> Option<bool> {
-    match std::fs::read_to_string(crate::paths::dnd_applied_file()).ok()?.trim() {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
+/// The file's key for a target whose state lives on the desktop (COSMIC's key, Maprisma Shell's
+/// setting); KDE's inhibition lives with the recorder and has none.
+fn applied_key(target: Target) -> Option<&'static str> {
+    match target {
+        Target::Cosmic => Some("cosmic"),
+        Target::Shell => Some("shell"),
+        Target::Kde => None,
     }
 }
 
-pub fn remember_applied(on: bool) -> std::io::Result<()> {
-    crate::paths::write_private(&crate::paths::dnd_applied_file(), if on { b"true" } else { b"false" })
+/// From the `dnd-applied` file's text (`cosmic=true`, `shell=false` lines): the state last
+/// applied on `target`. Each desktop keeps its own: one home is shared by COSMIC, KDE and Hyprland
+/// sessions, and what was written to COSMIC says nothing about Maprisma Shell's setting. The old
+/// single "true"/"false" (written for whichever desktop ran) counts as unknown.
+pub fn applied_in(text: &str, target: Target) -> Option<bool> {
+    let key = applied_key(target)?;
+    text.lines().find_map(|line| match line.trim().split_once('=') {
+        Some((k, "true")) if k.trim() == key => Some(true),
+        Some((k, "false")) if k.trim() == key => Some(false),
+        _ => None,
+    })
+}
+
+/// `text` with `target`'s state set, the other desktops' lines kept.
+pub fn with_applied(text: &str, target: Target, on: bool) -> String {
+    let Some(key) = applied_key(target) else { return text.to_owned() };
+    let mut out: String = text
+        .lines()
+        .filter(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() != key && applied_key_known(k.trim())))
+        .map(|l| format!("{}\n", l.trim()))
+        .collect();
+    out.push_str(&format!("{key}={on}\n"));
+    out
+}
+
+fn applied_key_known(key: &str) -> bool {
+    matches!(key, "cosmic" | "shell")
+}
+
+/// The state last applied on `target` (None: unknown, or KDE).
+pub fn last_applied(target: Target) -> Option<bool> {
+    applied_in(&std::fs::read_to_string(crate::paths::dnd_applied_file()).ok()?, target)
+}
+
+pub fn remember_applied(target: Target, on: bool) -> std::io::Result<()> {
+    if applied_key(target).is_none() {
+        return Ok(());
+    }
+    let path = crate::paths::dnd_applied_file();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    crate::paths::write_private(&path, with_applied(&text, target, on).as_bytes())
 }
 
 pub fn target(desktop: Desktop) -> Option<Target> {
