@@ -339,7 +339,7 @@ async fn refresh(state: &Shared, connection: &Connection, force_menu: bool) -> z
     Ok(())
 }
 fn open_manager() {
-    if let Ok(mut child) = std::process::Command::new("maprisma-manager").args(["--page", "notifications"]).stdin(std::process::Stdio::null()).spawn() {
+    if let Ok(mut child) = std::process::Command::new("maprisma-settings").args(["--page", "notifications"]).stdin(std::process::Stdio::null()).spawn() {
         std::thread::spawn(move || {
             let _ = child.wait();
         });

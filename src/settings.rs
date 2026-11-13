@@ -34,7 +34,7 @@ pub struct Settings {
     pub screenshot_key: bool,
     /// Crash reports as notifications (app "Crashes").
     pub notify_crashes: bool,
-    /// The old "Check with AI" helper ("auto" or an id): used only while Maprisma Manager's shared
+    /// The old "Check with AI" helper ("auto" or an id): used only while Maprisma Settings' shared
     /// `maprisma-ai/settings.json` doesn't exist (migration, [crate::shared_ai]).
     pub ai_helper: String,
 }
@@ -73,7 +73,7 @@ pub fn format_time(minutes: u32) -> String {
 }
 
 /// A whole number clamped to `(min, default, max)`; a fraction or not a number is the default
-/// (the same rule as Maprisma Manager's Notifications page).
+/// (the same rule as Maprisma Settings' Notifications page).
 fn bounded(value: &Value, (min, default, max): (u32, u32, u32)) -> u32 {
     match value.as_f64().filter(|v| v.is_finite() && v.fract() == 0.0) {
         Some(v) => v.clamp(min as f64, max as f64) as u32,

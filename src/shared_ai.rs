@@ -1,4 +1,4 @@
-//! The AI helper every Maprisma app uses, chosen in Maprisma Manager → AI:
+//! The AI helper every Maprisma app uses, chosen in Maprisma Settings → AI:
 //! `$XDG_CONFIG_HOME/maprisma-ai/settings.json`, a JSON object whose `helper` is `"auto"` or a
 //! helper id (`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,160}$`: catalog ids like `claude`, local models
 //! like `pi:<provider>/<model>`). A missing or broken file or value is `"auto"`. The Notifier only

@@ -16,7 +16,7 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
 |---|---|---|
 | recorder | `maprisma-notifier-recorder` (or inside the tray process) | Session D-Bus monitor (`org.freedesktop.DBus.Monitoring.BecomeMonitor`, match `interface='org.freedesktop.Notifications',member='Notify'` and `NotificationClosed`/`ActionInvoked` signals), read-only; appends to the history; applies the do-not-disturb schedule. One per session (D-Bus name `io.github.ubruckhaus.CosmicMaprismaNotifier.Recorder`, DoNotQueue). Started by the tray (KDE/Hyprland) or the applet (COSMIC); ends with its parent (PR_SET_PDEATHSIG) unless started standalone. |
 | applet | `maprisma-notifier` | COSMIC applet `io.github.ubruckhaus.CosmicMaprismaNotifier` (popup) and `--window` (libcosmic window for KDE/Hyprland; a second `--window` start closes the open one via `io.github.ubruckhaus.CosmicMaprismaNotifier.Window` / interface `io.github.ubruckhaus.Notifier.Window`, method `Close`). |
-| tray | `maprisma-notifier-tray` | SNI tray (KDE, Hyprland): icon bell / bell with dot (unread) / bell-off (do not disturb), tooltip "N unread"; left = toggle window, middle = toggle do-not-disturb, right = menu (Open, Do not disturb ✓, Clear all, Settings… → `maprisma-manager --page notifications`). |
+| tray | `maprisma-notifier-tray` | SNI tray (KDE, Hyprland): icon bell / bell with dot (unread) / bell-off (do not disturb), tooltip "N unread"; left = toggle window, middle = toggle do-not-disturb, right = menu (Open, Do not disturb ✓, Clear all, Settings… → `maprisma-settings --page notifications`). |
 
 ## Files (the contract the Manager and Shell rely on)
 
@@ -42,7 +42,7 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
 
 - Every key optional; missing/invalid → the default above. Writers change only their keys
   (read–modify–write, atomic tmp + rename, keep unknown keys) under the lock below.
-- **Writing the settings (lock protocol, for every writer: the Notifier, Maprisma Manager, the
+- **Writing the settings (lock protocol, for every writer: the Notifier, Maprisma Settings, the
   dictation overlay):** take an exclusive POSIX record lock on the whole of
   `settings.json.lock` in the same folder (create it `0600` if missing, never delete it), then
   read `settings.json`, change your keys, write a new temporary file in the same folder (created
@@ -64,13 +64,13 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
 
 ### The AI helper — `$XDG_CONFIG_HOME/maprisma-ai/settings.json` (shared)
 
-The helper every Maprisma app uses, chosen in Maprisma Manager → AI: a JSON object whose
+The helper every Maprisma app uses, chosen in Maprisma Settings → AI: a JSON object whose
 `"helper"` is `"auto"` or an id matching `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,160}$`; a missing or
 broken file or value is `"auto"`. The Notifier only reads it (`src/shared_ai.rs`): when *Check
 with AI* runs and while its window shows (re-read every tick). `"auto"`, or a helper that isn't
 installed or has no `task` (e.g. a local `pi:<provider>/<model>`), means the first installed
 helper with a `task` in the catalog's order. The window shows "AI helper: <name>" with "Set in
-Maprisma Manager → AI" (a click opens `maprisma-manager --page ai`); it has no own choice.
+Maprisma Settings → AI" (a click opens `maprisma-settings --page ai`); it has no own choice.
 
 ### History — `$XDG_STATE_HOME/maprisma-notifier/history.jsonl`
 
@@ -182,7 +182,7 @@ inhibition's cookie is kept until `UnInhibit` succeeded.
   gets `shell setDnd <true|false>` / `shell getDnd` which write/read the same key. Writers change
   only their keys (the Manager's power.dart pattern: re-read before write, keep the rest).
 
-## Maprisma Manager
+## Maprisma Settings
 
 - Catalog entry `notifier` ("Maprisma Notifier", kind `rust`, repo `maprisma-notifier`, GitHub
   `maprisma/notifier`; bar icon: COSMIC applet `io.github.ubruckhaus.CosmicMaprismaNotifier`,

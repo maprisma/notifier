@@ -198,7 +198,7 @@ impl Reports {
     /// Details / Check with AI on one of ours.
     fn action(&self, id: u32, key: &str, settings: &Settings) {
         let Some(crash) = self.by_id.get(&id).cloned() else { return };
-        // The helper all Maprisma apps use (Maprisma Manager → AI), read now; the old own
+        // The helper all Maprisma apps use (Maprisma Settings → AI), read now; the old own
         // setting only while that file doesn't exist.
         let old = settings.ai_helper.clone();
         let key = key.to_owned();
@@ -316,7 +316,7 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
     let mut current = settings::load();
     let mut kde = crate::dnd::Kde::default();
     // Written only when the effective state changes (the switch, a schedule boundary): a change
-    // made on the desktop itself or by Maprisma Manager is not fought. Only Plasma's
+    // made on the desktop itself or by Maprisma Settings is not fought. Only Plasma's
     // inhibition, which lives with this connection, is taken at once.
     let effective = settings::effective_dnd(&current, settings::local_minutes());
     let kde_target = target == Some(crate::dnd::Target::Kde);

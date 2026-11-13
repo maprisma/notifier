@@ -5,7 +5,7 @@
 #   ~/.local/bin/maprisma-notifier-recorder   writes the history (started by the applet or tray)
 #   ~/.local/share/applications/…desktop      makes it an applet for the panel, and the window
 #   ~/.local/share/icons/hicolor/scalable/apps/…svg  the bell icons
-#   ~/.local/share/maprisma-notifier/helpers.json   the AI helpers (for Maprisma Manager too)
+#   ~/.local/share/maprisma-notifier/helpers.json   the AI helpers (for Maprisma Settings too)
 #   ~/.config/autostart/…Tray.desktop         the tray on KDE and Hyprland
 # Then add it in COSMIC Settings › Desktop › Panel › Applets.
 set -euo pipefail

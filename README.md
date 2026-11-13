@@ -13,9 +13,9 @@ showing the popups. Maprisma Notifier records what they show and keeps it in a h
   newest first inside), an unread dot before new ones (red for critical ones; a click marks one
   read), *Clear* per app, *Mark all read*, *Clear all* (asks first), the **Do not disturb** switch
   with the schedule, Language, Corners, *F12 saves a screenshot*, *AI helper: …* (when one is
-  installed; it shows the helper and opens Maprisma Manager → AI, where it is chosen) and
+  installed; it shows the helper and opens Maprisma Settings → AI, where it is chosen) and
   *Notification settings…*
-  (Maprisma Manager's Notifications page).
+  (Maprisma Settings' Notifications page).
 - **Do not disturb:** the switch, or a daily schedule (e.g. 22:00–07:00, across midnight), see
   below.
 - **Crashes:** when one of your programs crashes, a notification "*program* crashed" (app
@@ -66,7 +66,7 @@ Hyprland) starts it and it ends with them.
   `org.freedesktop.Notifications`) mark entries closed or run Details / Check with AI.
   At most five crash notifications a minute. Off with `notify_crashes: false` (Maprisma
   Manager: *Report app crashes*).
-- The helper *Check with AI* opens is the one all Maprisma apps use, chosen in Maprisma Manager →
+- The helper *Check with AI* opens is the one all Maprisma apps use, chosen in Maprisma Settings →
   AI and saved in `~/.config/maprisma-ai/settings.json` (`"helper": "auto"` or an id); it is read
   when the button is clicked. A chosen helper that isn't installed (or has no interactive *task*,
   such as a local model) falls back to the first installed one.
@@ -79,11 +79,11 @@ Hyprland) starts it and it ends with them.
 
 | File | What |
 |---|---|
-| `~/.config/maprisma-notifier/settings.json` | settings, shared with Maprisma Manager (every key optional; writers keep the others) |
+| `~/.config/maprisma-notifier/settings.json` | settings, shared with Maprisma Settings (every key optional; writers keep the others) |
 | `~/.config/maprisma-notifier/settings.json.lock` | held (POSIX record lock) while a writer changes the settings; see docs/plan.md *Writing the settings* |
 | `~/.local/state/maprisma-notifier/history.jsonl` | the history, one JSON object per line, `0600` (its rewrites are `0600` from the start) |
 | `~/.local/state/maprisma-notifier/history.lock` | held while the history is rewritten |
-| `~/.config/maprisma-ai/settings.json` | the AI helper all Maprisma apps use (read only; Maprisma Manager → AI writes it) |
+| `~/.config/maprisma-ai/settings.json` | the AI helper all Maprisma apps use (read only; Maprisma Settings → AI writes it) |
 | `~/.local/share/maprisma-notifier/helpers.json` | the AI helpers catalog (installed copy of `data/helpers.json`) |
 | `~/Pictures/Maprisma Notifier/` | F12 screenshots and their notes |
 
@@ -131,7 +131,7 @@ It installs into `~/.local`:
   (`OnlyShowIn=KDE;Hyprland;`)
 
 On COSMIC add **Maprisma Notifier** in COSMIC Settings › Desktop › Panel › Applets. On KDE and
-Hyprland the tray starts with the next login (or run `maprisma-notifier-tray`). Maprisma Manager
+Hyprland the tray starts with the next login (or run `maprisma-notifier-tray`). Maprisma Settings
 can install, update and remove it too.
 
 ## Development

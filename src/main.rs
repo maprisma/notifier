@@ -164,7 +164,7 @@ struct Notifier<const WINDOW_MODE: bool> {
     setting_error: bool,
     resize: window_size::Debounce,
     // Check with AI: the installed helpers (looked up off the UI thread now and then) and the
-    // helper all Maprisma apps use (Maprisma Manager → AI), re-read on every tick.
+    // helper all Maprisma apps use (Maprisma Settings → AI), re-read on every tick.
     helpers: Vec<Installed>,
     shared_helper: String,
     ticks: u32,
@@ -289,10 +289,10 @@ fn stamp(path: &std::path::Path) -> Option<(SystemTime, u64)> {
     Some((meta.modified().ok()?, meta.len()))
 }
 
-// Opens a page of Maprisma Manager (Notifications: the full settings; AI: the helper), without
+// Opens a page of Maprisma Settings (Notifications: the full settings; AI: the helper), without
 // waiting for it.
 fn open_manager(page: &str) {
-    if let Ok(mut child) = std::process::Command::new("maprisma-manager")
+    if let Ok(mut child) = std::process::Command::new("maprisma-settings")
         .args(["--page", page])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -492,10 +492,10 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             }
         }
         if !self.helpers.is_empty() {
-            // Chosen for all Maprisma apps in Maprisma Manager → AI (a click opens that page).
+            // Chosen for all Maprisma apps in Maprisma Settings → AI (a click opens that page).
             let label = trf("AI helper: {0}", &[helper_label(&self.helpers, &self.shared_helper)]);
             actions = actions.push(
-                menu_button(column![text::body(label), text::caption(tr("Set in Maprisma Manager → AI"))].spacing(2)).on_press(Message::OpenAiSettings),
+                menu_button(column![text::body(label), text::caption(tr("Set in Maprisma Settings → AI"))].spacing(2)).on_press(Message::OpenAiSettings),
             );
         }
         actions = actions.push(menu_button(text::body(tr("Notification settings…"))).on_press(Message::OpenSettings));
