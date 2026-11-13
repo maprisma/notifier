@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "helpers": [
     {
       "id": "claude",
@@ -55,18 +55,7 @@
       "id": "gemini",
       "name": "Gemini CLI",
       "command": "gemini",
-      "ask": {
-        "argv": [
-          "gemini",
-          "--approval-mode",
-          "default",
-          "-o",
-          "text",
-          "-p",
-          "{prompt}"
-        ],
-        "stdin": false
-      },
+      "ask": null,
       "task": {
         "argv": [
           "gemini",
