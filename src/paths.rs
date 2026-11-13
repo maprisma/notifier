@@ -74,6 +74,13 @@ pub fn history_lock() -> PathBuf {
     state_root().join(DIR).join("history.lock")
 }
 
+/// The do not disturb state the recorder last wrote to the desktop (`true`/`false`; COSMIC and
+/// Hyprland), so a start can tell a schedule change while it was not running from a change the
+/// user made on the desktop.
+pub fn dnd_applied_file() -> PathBuf {
+    state_root().join(DIR).join("dnd-applied")
+}
+
 /// Maprisma Shell's settings (Hyprland), `notifications.dnd`.
 pub fn shell_file() -> PathBuf {
     config_root().join("maprisma-shell").join("shell.json")

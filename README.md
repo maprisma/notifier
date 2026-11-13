@@ -56,8 +56,11 @@ Hyprland) starts it and it ends with them.
 - Do not disturb is in effect when the switch is on **or** the schedule is on and the time is in
   its window. The recorder writes it to the desktop (table above) **only when that changes** (the
   switch, a schedule boundary; a write that failed is tried again every 2 s until it works); a
-  change made on the desktop itself stays until the next change.
-  On KDE the inhibition ends with the recorder.
+  change made on the desktop itself stays until the next change. A change that happened while
+  the recorder was not running (a schedule window began or ended) is written when it starts: it
+  remembers what it last wrote in `~/.local/state/maprisma-notifier/dnd-applied`.
+  On KDE the inhibition ends with the recorder, and it is taken again when Plasma's notification
+  server restarts.
 - Crashes: the recorder follows systemd-coredump's journal entries
   (`journalctl -f -o json MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1`, your own programs only;
   no root needed) and sends the crash notification itself; it reaches the history like any other.

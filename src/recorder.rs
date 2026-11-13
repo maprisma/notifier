@@ -99,6 +99,9 @@ impl Applied {
             Ok(()) => {
                 self.state = effective;
                 self.failing = false;
+                if matches!(target, Some(crate::dnd::Target::Shell | crate::dnd::Target::Cosmic)) {
+                    let _ = crate::dnd::remember_applied(effective);
+                }
             }
             Err(error) => {
                 if !self.failing {
@@ -107,6 +110,25 @@ impl Applied {
                 self.failing = true;
             }
         }
+    }
+}
+
+/// The state counted as applied when the recorder starts. KDE: nothing is held yet, so "off"
+/// (an "on" is taken now). COSMIC/Hyprland: what this recorder last wrote there, so a schedule
+/// that began or ended while it was not running is applied now, while a change the user made
+/// on the desktop itself (Maprisma's state unchanged) is kept; unknown → the effective state.
+fn start_state(kde_target: bool, last_applied: Option<bool>, effective: bool) -> bool {
+    if kde_target { false } else { last_applied.unwrap_or(effective) }
+}
+
+/// The notification server's owner changed (Plasma restarted, or it went away): on KDE the
+/// inhibition went with the old server, so nothing is held and an "on" is taken again from the
+/// new one.
+fn server_changed(applied: &mut Applied, kde: &mut crate::dnd::Kde, kde_target: bool) {
+    if kde_target {
+        kde.forget();
+        applied.state = false;
+        applied.failing = false;
     }
 }
 
@@ -315,13 +337,13 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
     let mut settings_stamp = stamp(&settings_path);
     let mut current = settings::load();
     let mut kde = crate::dnd::Kde::default();
-    // Written only when the effective state changes (the switch, a schedule boundary): a change
-    // made on the desktop itself or by Maprisma Settings is not fought. Only Plasma's
-    // inhibition, which lives with this connection, is taken at once.
+    // Written only when the effective state changes (the switch, a schedule boundary, also one
+    // passed while the recorder was not running): a change made on the desktop itself or by
+    // Maprisma Settings is not fought. Plasma's inhibition, which lives with this connection,
+    // is taken at once.
     let effective = settings::effective_dnd(&current, settings::local_minutes());
     let kde_target = target == Some(crate::dnd::Target::Kde);
-    // On KDE nothing is held yet: start from "off" so an "on" is taken (and retried) now.
-    let mut applied = Applied { state: if kde_target { false } else { effective }, failing: false };
+    let mut applied = Applied { state: start_state(kde_target, crate::dnd::last_applied(), effective), failing: false };
     applied.sync(effective, target, &connection, &mut kde).await;
 
     // The server's unique name: its NotificationClosed / ActionInvoked count only from it (any
@@ -364,7 +386,14 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
                             record(&p.notify, server_id.unwrap_or(0), p.time, &current);
                         }
                     }
-                    Some(Event::OwnerChanged { owner }) => server = Some(owner).filter(|o| !o.is_empty()),
+                    Some(Event::OwnerChanged { owner }) => {
+                        server = Some(owner).filter(|o| !o.is_empty());
+                        server_changed(&mut applied, &mut kde, kde_target);
+                        if server.is_some() {
+                            let effective = settings::effective_dnd(&current, settings::local_minutes());
+                            applied.sync(effective, target, &connection, &mut kde).await;
+                        }
+                    }
                     Some(Event::Closed { sender, id, .. }) if server.as_deref() == Some(sender.as_str()) => {
                         let _ = crate::history::mark_closed(id, false);
                     }
@@ -444,6 +473,42 @@ fn spawn_child(path: &std::path::Path) -> std::io::Result<std::process::Child> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dnd_at_start_and_after_a_server_restart() {
+        // KDE: nothing held at start
+        assert!(!start_state(true, Some(true), true));
+        // COSMIC/Hyprland: a schedule that began (or ended) while not running is applied now
+        assert!(!start_state(false, Some(false), true));
+        assert!(start_state(false, Some(true), false));
+        // the user's own desktop change with Maprisma's state unchanged is kept; unknown → as is
+        assert!(start_state(false, Some(true), true));
+        assert!(start_state(false, None, true) && !start_state(false, None, false));
+
+        // Plasma restarted: the old cookie is dropped (never released against the new server)
+        // and "on" is taken again.
+        let mut applied = Applied { state: true, failing: true };
+        let mut kde = crate::dnd::Kde::holding(7);
+        server_changed(&mut applied, &mut kde, true);
+        assert!(!kde.held() && !applied.state && !applied.failing);
+        // elsewhere the state is file-backed: nothing to forget
+        let mut applied = Applied { state: true, failing: false };
+        let mut kde = crate::dnd::Kde::default();
+        server_changed(&mut applied, &mut kde, false);
+        assert!(applied.state);
+    }
+
+    #[test]
+    fn last_applied_dnd_is_remembered() {
+        let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::remove_file(crate::paths::dnd_applied_file());
+        assert_eq!(crate::dnd::last_applied(), None);
+        crate::dnd::remember_applied(true).unwrap();
+        assert_eq!(crate::dnd::last_applied(), Some(true));
+        crate::dnd::remember_applied(false).unwrap();
+        assert_eq!(crate::dnd::last_applied(), Some(false));
+        let _ = std::fs::remove_file(crate::paths::dnd_applied_file());
+    }
 
     #[test]
     fn rules_and_filter() {

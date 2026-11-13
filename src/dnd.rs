@@ -54,6 +54,17 @@ impl Kde {
         self.cookie.is_some()
     }
 
+    /// The notification server changed (Plasma restarted): the old server's inhibition went with
+    /// it, and its cookie must never be released against the new one.
+    pub fn forget(&mut self) {
+        self.cookie = None;
+    }
+
+    #[cfg(test)]
+    pub fn holding(cookie: u32) -> Self {
+        Self { cookie: Some(cookie) }
+    }
+
     pub async fn set(&mut self, connection: &zbus::Connection, on: bool) -> zbus::Result<()> {
         let proxy = zbus::Proxy::new(connection, crate::notify::INTERFACE, crate::notify::PATH, crate::notify::INTERFACE).await?;
         match (on, self.cookie) {
@@ -79,6 +90,19 @@ pub enum Target {
     Shell,
     Cosmic,
     Kde,
+}
+
+/// The state last applied on COSMIC/Hyprland (None: unknown).
+pub fn last_applied() -> Option<bool> {
+    match std::fs::read_to_string(crate::paths::dnd_applied_file()).ok()?.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn remember_applied(on: bool) -> std::io::Result<()> {
+    crate::paths::write_private(&crate::paths::dnd_applied_file(), if on { b"true" } else { b"false" })
 }
 
 pub fn target(desktop: Desktop) -> Option<Target> {
