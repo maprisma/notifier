@@ -74,7 +74,8 @@ Hyprland) starts it and it ends with them.
 | File | What |
 |---|---|
 | `~/.config/maprisma-notifier/settings.json` | settings, shared with Maprisma Manager (every key optional; writers keep the others) |
-| `~/.local/state/maprisma-notifier/history.jsonl` | the history, one JSON object per line, `0600` |
+| `~/.config/maprisma-notifier/settings.json.lock` | held (POSIX record lock) while a writer changes the settings; see docs/plan.md *Writing the settings* |
+| `~/.local/state/maprisma-notifier/history.jsonl` | the history, one JSON object per line, `0600` (its rewrites are `0600` from the start) |
 | `~/.local/state/maprisma-notifier/history.lock` | held while the history is rewritten |
 | `~/.config/maprisma-ai/settings.json` | the AI helper all Maprisma apps use (read only; Maprisma Manager → AI writes it) |
 | `~/.local/share/maprisma-notifier/helpers.json` | the AI helpers catalog (installed copy of `data/helpers.json`) |

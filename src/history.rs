@@ -260,7 +260,7 @@ impl Drop for Locked {
 
 fn write_all(path: &Path, entries: &[Entry]) -> std::io::Result<()> {
     let bytes: String = entries.iter().map(line).collect();
-    crate::paths::write_atomic(path, bytes.as_bytes())?;
+    crate::paths::write_private(path, bytes.as_bytes())?;
     set_private(path);
     Ok(())
 }
@@ -296,7 +296,10 @@ pub fn append(entry: Entry, settings: &crate::settings::Settings) -> std::io::Re
         return write_all(&path, &entries);
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_CLOEXEC).open(&path)?
+    };
     set_private(&path);
     file.write_all(new_line.as_bytes())
 }

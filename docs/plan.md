@@ -41,7 +41,18 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
 ```
 
 - Every key optional; missing/invalid → the default above. Writers change only their keys
-  (read–modify–write, atomic tmp + rename, keep unknown keys).
+  (read–modify–write, atomic tmp + rename, keep unknown keys) under the lock below.
+- **Writing the settings (lock protocol, for every writer: the Notifier, Maprisma Manager, the
+  dictation overlay):** take an exclusive POSIX record lock on the whole of
+  `settings.json.lock` in the same folder (create it `0600` if missing, never delete it), then
+  read `settings.json`, change your keys, write a new temporary file in the same folder (created
+  exclusively, fsync), rename it over `settings.json`, and only then release the lock (close the
+  lock file). The Notifier uses `fcntl(F_OFD_SETLKW)`; it conflicts with classic record locks,
+  so Dart's `RandomAccessFile.lock(FileLock.blockingExclusive)` and Python's
+  `fcntl.lockf(f, fcntl.LOCK_EX)` interoperate (`flock(2)` does **not**: it is a separate kind
+  of lock). Hold it only for the read–modify–rename, never across a wait for the user. Readers
+  need no lock (the rename is atomic). A writer that doesn't lock yet can still lose a
+  concurrent change, as before.
 - `dnd` is the user's switch; the effective state is `dnd || (schedule on && now in from–to)`
   (a window crossing midnight works).
 - `muted_apps`: app names (the Notify `app_name`) whose notifications are recorded but never count
