@@ -39,19 +39,31 @@ pub fn parse(bytes: &[u8]) -> String {
 /// The choice from the file at `path`; `old` (the Notifier's own `ai_helper`) only while that
 /// file doesn't exist.
 pub fn choice_at(path: &Path, old: &str) -> String {
-    use std::io::Read;
     match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if old != AUTO && crate::helpers::valid_setting(old) { old.into() } else { AUTO.into() }
         }
-        _ => {
-            let mut bytes = vec![];
-            match std::fs::File::open(path).and_then(|f| f.take(FILE_MAX + 1).read_to_end(&mut bytes)) {
-                Ok(_) if bytes.len() as u64 <= FILE_MAX => parse(&bytes),
-                _ => AUTO.into(),
-            }
-        }
+        _ => match read_small_regular(path) {
+            Some(bytes) => parse(&bytes),
+            None => AUTO.into(),
+        },
     }
+}
+
+/// The bytes of the file when it is a regular file of at most [FILE_MAX] bytes. Opened without
+/// blocking (a FIFO, or a link to one, never stalls the window's tick), the opened descriptor
+/// checked with fstat, then a bounded read. A link to a regular file is fine (dotfiles).
+fn read_small_regular(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC).open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > FILE_MAX {
+        return None;
+    }
+    let mut bytes = vec![];
+    file.take(FILE_MAX + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= FILE_MAX).then_some(bytes)
 }
 
 /// The helper choice for this session (read now).
@@ -125,5 +137,32 @@ mod tests {
             assert_eq!(crate::helpers::choose(&choice, &installed).unwrap().helper.id, used, "{stored}");
         }
         assert_eq!(crate::helpers::choose(&choice_at(&path, "auto"), &[]), None);
+    }
+
+    #[test]
+    fn a_fifo_or_a_link_to_one_does_not_block() {
+        let path = scratch("fifo");
+        let fifo = path.with_file_name("fifo");
+        let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: mkfifo with a valid C string.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (done, wait) = std::sync::mpsc::channel();
+        let (fifo2, path2) = (fifo.clone(), path.clone());
+        std::thread::spawn(move || {
+            let direct = choice_at(&fifo2, "codex");
+            std::os::unix::fs::symlink(&fifo2, &path2).unwrap();
+            let linked = choice_at(&path2, "codex");
+            let _ = done.send((direct, linked));
+        });
+        let (direct, linked) = wait.recv_timeout(std::time::Duration::from_secs(5)).expect("blocked on a FIFO");
+        assert_eq!((direct.as_str(), linked.as_str()), ("auto", "auto"));
+        // A link to a regular file is read.
+        let real = path.with_file_name("real.json");
+        std::fs::write(&real, r#"{"helper": "codex"}"#).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        assert_eq!(choice_at(&path, "auto"), "codex");
+        // A folder is not a file.
+        assert_eq!(choice_at(&path.with_file_name(""), "codex"), "auto");
     }
 }
