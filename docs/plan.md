@@ -146,6 +146,10 @@ A crash report's entry (app `Crashes`) also has
 | COSMIC | cosmic-config `com.system76.CosmicNotifications` v1 key `do_not_disturb` (`~/.config/cosmic/com.system76.CosmicNotifications/v1/do_not_disturb`, `true`/`false`) |
 | KDE | `org.freedesktop.Notifications.Inhibit` held by the recorder while effective (`UnInhibit` when it ends) |
 
+The recorder counts a state as applied only when the write (or Inhibit / UnInhibit) worked; a
+failed one is tried again on every tick (2 s) while the effective state still differs. On KDE the
+inhibition's cookie is kept until `UnInhibit` succeeded.
+
 ### Maprisma Shell — `~/.config/maprisma-shell/shell.json` `"notifications"`
 
 ```json

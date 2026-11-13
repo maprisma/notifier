@@ -67,17 +67,44 @@ fn record(n: &notify::Notify, server_id: u32, time: i64, settings: &Settings) {
     }
 }
 
-/// Applies do not disturb where this desktop reads it. `kde` holds Plasma's inhibition.
-async fn apply(target: Option<crate::dnd::Target>, on: bool, connection: &zbus::Connection, kde: &mut crate::dnd::Kde) {
+/// Applies do not disturb where this desktop reads it. `kde` holds Plasma's inhibition. Whether
+/// it worked: the caller counts a state as applied only then, and tries again on the next tick.
+async fn apply(target: Option<crate::dnd::Target>, on: bool, connection: &zbus::Connection, kde: &mut crate::dnd::Kde) -> Result<(), String> {
     use crate::dnd::Target;
-    let result: Result<(), String> = match target {
+    match target {
         Some(Target::Shell) => crate::dnd::set_shell(on).map(|_| ()).map_err(|e| e.to_string()),
         Some(Target::Cosmic) => crate::dnd::set_cosmic(on).map(|_| ()).map_err(|e| e.to_string()),
         Some(Target::Kde) => kde.set(connection, on).await.map_err(|e| e.to_string()),
         None => Ok(()),
-    };
-    if let Err(error) = result {
-        eprintln!("maprisma-notifier-recorder: do not disturb: {error}");
+    }
+}
+
+/// The do not disturb state the recorder last put on the desktop, retried until it works.
+struct Applied {
+    state: bool,
+    /// The last attempt failed (logged once per failing run, not every tick).
+    failing: bool,
+}
+
+impl Applied {
+    /// Brings the desktop to `effective` when it isn't there yet (a change, or a failed attempt).
+    async fn sync(&mut self, effective: bool, target: Option<crate::dnd::Target>, connection: &zbus::Connection, kde: &mut crate::dnd::Kde) {
+        if effective == self.state {
+            self.failing = false;
+            return;
+        }
+        match apply(target, effective, connection, kde).await {
+            Ok(()) => {
+                self.state = effective;
+                self.failing = false;
+            }
+            Err(error) => {
+                if !self.failing {
+                    eprintln!("maprisma-notifier-recorder: do not disturb: {error} (trying again)");
+                }
+                self.failing = true;
+            }
+        }
     }
 }
 
@@ -274,10 +301,11 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
     // Written only when the effective state changes (the switch, a schedule boundary): a change
     // made on the desktop itself or by Maprisma Manager is not fought. Only Plasma's
     // inhibition, which lives with this connection, is taken at once.
-    let mut applied = settings::effective_dnd(&current, settings::local_minutes());
-    if applied && target == Some(crate::dnd::Target::Kde) {
-        apply(target, true, &connection, &mut kde).await;
-    }
+    let effective = settings::effective_dnd(&current, settings::local_minutes());
+    let kde_target = target == Some(crate::dnd::Target::Kde);
+    // On KDE nothing is held yet: start from "off" so an "on" is taken (and retried) now.
+    let mut applied = Applied { state: if kde_target { false } else { effective }, failing: false };
+    applied.sync(effective, target, &connection, &mut kde).await;
 
     let (crash_sender, mut crashes) = tokio::sync::mpsc::channel::<Crash>(32);
     let _follower = journal.map(|argv| AbortOnDrop(tokio::spawn(follow_journal(argv, crash_sender.clone()))));
@@ -324,10 +352,7 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
                     current = settings::load();
                 }
                 let effective = settings::effective_dnd(&current, settings::local_minutes());
-                if effective != applied {
-                    applied = effective;
-                    apply(target, applied, &connection, &mut kde).await;
-                }
+                applied.sync(effective, target, &connection, &mut kde).await;
             }
         }
     }
@@ -397,6 +422,10 @@ mod tests {
     struct FakeServer {
         next: std::sync::atomic::AtomicU32,
         inhibited: std::sync::Arc<std::sync::atomic::AtomicI32>,
+        /// UnInhibit calls that fail (counted down), then they work.
+        fail_uninhibit: std::sync::Arc<std::sync::atomic::AtomicI32>,
+        /// Every UnInhibit call, failed or not.
+        uninhibit_calls: std::sync::Arc<std::sync::atomic::AtomicI32>,
         /// (app, replaces, summary, actions) of every Notify.
         calls: std::sync::Arc<std::sync::Mutex<Vec<(String, u32, String, Vec<String>)>>>,
     }
@@ -412,9 +441,15 @@ mod tests {
             self.inhibited.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             7
         }
-        fn un_inhibit(&self, cookie: u32) {
+        fn un_inhibit(&self, cookie: u32) -> zbus::fdo::Result<()> {
+            use std::sync::atomic::Ordering::SeqCst;
             assert_eq!(cookie, 7);
-            self.inhibited.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.uninhibit_calls.fetch_add(1, SeqCst);
+            if self.fail_uninhibit.fetch_sub(1, SeqCst) > 0 {
+                return Err(zbus::fdo::Error::Failed("busy".into()));
+            }
+            self.inhibited.fetch_sub(1, SeqCst);
+            Ok(())
         }
         #[zbus(signal)]
         async fn notification_closed(emitter: &zbus::object_server::SignalEmitter<'_>, id: u32, reason: u32) -> zbus::Result<()>;
@@ -447,11 +482,13 @@ mod tests {
         settings::set("dnd_schedule", None).unwrap();
 
         let inhibited = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let fail_uninhibit = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let uninhibit_calls = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
         let server = zbus::connection::Builder::session()
             .unwrap()
             .name(notify::INTERFACE)
             .unwrap()
-            .serve_at(notify::PATH, FakeServer { next: 100.into(), inhibited: inhibited.clone(), calls: Default::default() })
+            .serve_at(notify::PATH, FakeServer { next: 100.into(), inhibited: inhibited.clone(), fail_uninhibit: fail_uninhibit.clone(), uninhibit_calls: uninhibit_calls.clone(), calls: Default::default() })
             .unwrap()
             .build()
             .await
@@ -495,10 +532,15 @@ mod tests {
         FakeServer::notification_closed(&emitter, 100, 2).await.unwrap();
         wait_for("closed", || crate::history::load()[0].closed).await;
 
-        // dnd off: released within a tick.
+        // dnd off: the first release fails; the cookie is kept and the release tried again.
+        fail_uninhibit.store(1, std::sync::atomic::Ordering::SeqCst);
         settings::set("dnd", Some(false.into())).unwrap();
         let held = inhibited.clone();
         wait_for("uninhibit", || held.load(std::sync::atomic::Ordering::SeqCst) == 0).await;
+        assert_eq!(uninhibit_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Released for good: no more attempts.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert_eq!(uninhibit_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         recorder.abort();
         settings::set("hidden_apps", None).unwrap();
@@ -539,6 +581,39 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "run under dbus-run-session with --ignored"]
+    async fn a_failed_dnd_write_is_tried_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::paths::test_roots();
+        let client = zbus::Connection::session().await.unwrap();
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        for _ in 0..100 {
+            if !dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let shell = crate::paths::shell_file();
+        let folder = shell.parent().unwrap().to_owned();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&shell, r#"{"notifications": {"dnd": false}}"#).unwrap();
+        settings::set("dnd_schedule", None).unwrap();
+        settings::set("dnd", Some(false.into())).unwrap();
+        let read = || serde_json::from_slice::<serde_json::Value>(&std::fs::read(crate::paths::shell_file()).unwrap()).unwrap();
+        let recorder = tokio::spawn(run_with(Some(crate::dnd::Target::Shell), None));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // The Shell's folder can't be written: the change fails...
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        settings::set("dnd", Some(true.into())).unwrap();
+        tokio::time::sleep(Duration::from_millis(4500)).await;
+        assert_eq!(read()["notifications"]["dnd"], false);
+        // ...and is made once it can be.
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        wait_for("shell dnd after the retry", || read()["notifications"]["dnd"] == true).await;
+        recorder.abort();
+        settings::set("dnd", None).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run under dbus-run-session with --ignored"]
     async fn a_crash_line_becomes_one_notification_and_one_entry() {
         let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::paths::test_roots();
@@ -557,7 +632,7 @@ mod tests {
             .unwrap()
             .name(notify::INTERFACE)
             .unwrap()
-            .serve_at(notify::PATH, FakeServer { next: 200.into(), inhibited: Default::default(), calls: calls.clone() })
+            .serve_at(notify::PATH, FakeServer { next: 200.into(), inhibited: Default::default(), fail_uninhibit: Default::default(), uninhibit_calls: Default::default(), calls: calls.clone() })
             .unwrap()
             .build()
             .await

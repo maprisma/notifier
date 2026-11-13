@@ -53,7 +53,8 @@ Hyprland) starts it and it ends with them.
   notification that replaces another updates its line. Clicking an action in a popup marks it read.
 - Do not disturb is in effect when the switch is on **or** the schedule is on and the time is in
   its window. The recorder writes it to the desktop (table above) **only when that changes** (the
-  switch, a schedule boundary); a change made on the desktop itself stays until the next change.
+  switch, a schedule boundary; a write that failed is tried again every 2 s until it works); a
+  change made on the desktop itself stays until the next change.
   On KDE the inhibition ends with the recorder.
 - Crashes: the recorder follows systemd-coredump's journal entries
   (`journalctl -f -o json MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1`, your own programs only;

@@ -63,8 +63,9 @@ impl Kde {
                 self.cookie = Some(cookie);
             }
             (false, Some(cookie)) => {
-                self.cookie = None;
+                // The cookie stays until the release worked (else it could never be released).
                 proxy.call::<_, _, ()>("UnInhibit", &(cookie,)).await?;
+                self.cookie = None;
             }
             _ => {}
         }
