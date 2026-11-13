@@ -47,9 +47,19 @@ User decisions (2026-11-13): Maprisma Shell keeps the popups on Hyprland; the re
 - `muted_apps`: app names (the Notify `app_name`) whose notifications are recorded but never count
   as unread. `hidden_apps`: not recorded at all.
 - `history_max` 50–5000, `history_days` 1–90.
-- `notify_crashes`: crash reports (below) on/off. `ai_helper`: `"auto"` (the first installed
-  helper in the catalog's order) or a helper id (a plain name); an unknown or uninstalled id
-  counts as `"auto"`.
+- `notify_crashes`: crash reports (below) on/off. `ai_helper`: the old own helper setting
+  (`"auto"` or a plain-name id); read only while the shared file below doesn't exist (migration),
+  no longer written.
+
+### The AI helper — `$XDG_CONFIG_HOME/maprisma-ai/settings.json` (shared)
+
+The helper every Maprisma app uses, chosen in Maprisma Manager → AI: a JSON object whose
+`"helper"` is `"auto"` or an id matching `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,160}$`; a missing or
+broken file or value is `"auto"`. The Notifier only reads it (`src/shared_ai.rs`): when *Check
+with AI* runs and while its window shows (re-read every tick). `"auto"`, or a helper that isn't
+installed or has no `task` (e.g. a local `pi:<provider>/<model>`), means the first installed
+helper with a `task` in the catalog's order. The window shows "AI helper: <name>" with "Set in
+Maprisma Manager → AI" (a click opens `maprisma-manager --page ai`); it has no own choice.
 
 ### History — `$XDG_STATE_HOME/maprisma-notifier/history.jsonl`
 
@@ -87,7 +97,7 @@ A crash report's entry (app `Crashes`) also has
   (or Shell, or Plasma's inhibition) holds the popup back, the history keeps it.
 - `ActionInvoked` for one of its ids: `details` opens a terminal with
   `sh -c 'coredumpctl info "$1" 2>&1 | less' sh <pid>`; `ai` opens a terminal with the chosen
-  helper's task command and the prompt below. The window shows the same two buttons on crash
+  helper's (the shared choice above) task command and the prompt below. The window shows the same two buttons on crash
   entries. Terminal: `xdg-terminal-exec` (when `--print-id` finds one), else `$TERMINAL` (a plain
   program name), else the first of kgx, ptyxis, gnome-terminal, konsole, cosmic-term,
   xfce4-terminal, foot, alacritty, kitty, wezterm, xterm. Working folder: home.
@@ -146,9 +156,8 @@ A crash report's entry (app `Crashes`) also has
   `{config}/maprisma-notifier`, `{state}/maprisma-notifier`).
 - Settings category **Notifications** (sidebar, between Sound and Power): do not disturb (switch +
   schedule from/to), history length (entries, days), show the unread count, *Report app crashes*
-  (`notify_crashes`) and the AI helper for *Check with AI* (`ai_helper`, the installed helpers of
-  the newer of `~/.local/share/maprisma-notifier/helpers.json` and
-  `/usr/lib/maprisma/data/helpers.json`), muted and hidden apps
+  (`notify_crashes`; *Check with AI* uses the helper of the Manager's **AI** page, the shared
+  file above), muted and hidden apps
   (from the history's app names), *Clear history*; on Hyprland also Shell's popup position,
   timeout and max; on COSMIC/KDE a button that opens the desktop's own notification settings
   (`cosmic-settings notifications` / `systemsettings kcm_notifications`). Reads/writes the files

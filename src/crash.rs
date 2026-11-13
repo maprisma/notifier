@@ -432,7 +432,8 @@ pub fn open_details(crash: &Crash) -> Result<(), OpenError> {
     spawn_detached(&details_argv(&terminal, crash.pid)).map_err(|e| OpenError::Failed(e.to_string()))
 }
 
-/// "Check with AI": the chosen helper (`ai_helper` setting) in a terminal with the crash prompt.
+/// "Check with AI": the chosen helper (the shared choice, [crate::shared_ai]) in a terminal with the
+/// crash prompt; one that isn't installed falls back to the first installed one.
 pub fn open_ai(crash: &Crash, setting: &str) -> Result<(), OpenError> {
     let installed = crate::helpers::installed();
     let helper = crate::helpers::choose(setting, &installed).ok_or(OpenError::NoHelper)?;

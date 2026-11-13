@@ -4,7 +4,7 @@
 //!
 //! The catalog: Maprisma's `/usr/lib/maprisma/data/helpers.json` when it is there, parses and
 //! is at least as new (`version`) as the copy shipped here (`data/helpers.json`, built in and
-//! installed to `~/.local/share/maprisma-notifier/helpers.json` for Maprisma Manager).
+//! installed to `~/.local/share/maprisma-notifier/helpers.json`).
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};

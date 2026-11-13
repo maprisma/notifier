@@ -1,7 +1,7 @@
 {
  "(no title)": "(bez tytułu)",
  "1 unread": "1 nieprzeczytane",
- "AI helper": "Asystent AI",
+ "AI helper: {0}": "Asystent AI: {0}",
  "Automatic": "Automatycznie",
  "Automatic ({0})": "Automatycznie ({0})",
  "Cancel": "Anuluj",
@@ -35,6 +35,7 @@
  "Saved as {0}": "Zapisano jako {0}",
  "Scheduled {0}–{1}": "Zaplanowane {0}–{1}",
  "Screenshot saved": "Zrzut ekranu zapisany",
+ "Set in Maprisma Manager → AI": "Ustawiane w Maprisma Manager → AI",
  "Slightly rounded ({0} px)": "Lekko zaokrąglone ({0} px)",
  "Square": "Proste",
  "System ({0})": "Systemowy ({0})",

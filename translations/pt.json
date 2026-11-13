@@ -1,7 +1,7 @@
 {
  "(no title)": "(sem título)",
  "1 unread": "1 não lida",
- "AI helper": "Assistente de IA",
+ "AI helper: {0}": "Assistente de IA: {0}",
  "Automatic": "Automático",
  "Automatic ({0})": "Automático ({0})",
  "Cancel": "Cancelar",
@@ -35,6 +35,7 @@
  "Saved as {0}": "Guardada como {0}",
  "Scheduled {0}–{1}": "Agendado {0}–{1}",
  "Screenshot saved": "Captura guardada",
+ "Set in Maprisma Manager → AI": "Define-se no Maprisma Manager → IA",
  "Slightly rounded ({0} px)": "Levemente arredondados ({0} px)",
  "Square": "Retos",
  "System ({0})": "Sistema ({0})",

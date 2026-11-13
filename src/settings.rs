@@ -34,7 +34,8 @@ pub struct Settings {
     pub screenshot_key: bool,
     /// Crash reports as notifications (app "Crashes").
     pub notify_crashes: bool,
-    /// "Check with AI": "auto" (the first installed helper) or a helper id.
+    /// The old "Check with AI" helper ("auto" or an id): used only while Maprisma Manager's shared
+    /// `maprisma-ai/settings.json` doesn't exist (migration, [crate::shared_ai]).
     pub ai_helper: String,
 }
 

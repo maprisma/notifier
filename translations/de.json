@@ -1,7 +1,7 @@
 {
  "(no title)": "(ohne Titel)",
  "1 unread": "1 ungelesen",
- "AI helper": "KI-Helfer",
+ "AI helper: {0}": "KI-Helfer: {0}",
  "Automatic": "Automatisch",
  "Automatic ({0})": "Automatisch ({0})",
  "Cancel": "Abbrechen",
@@ -35,6 +35,7 @@
  "Saved as {0}": "Gespeichert als {0}",
  "Scheduled {0}–{1}": "Geplant {0}–{1}",
  "Screenshot saved": "Bildschirmfoto gespeichert",
+ "Set in Maprisma Manager → AI": "Einstellen in Maprisma Manager → KI",
  "Slightly rounded ({0} px)": "Leicht abgerundet ({0} px)",
  "Square": "Eckig",
  "System ({0})": "System ({0})",

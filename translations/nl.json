@@ -1,7 +1,7 @@
 {
  "(no title)": "(geen titel)",
  "1 unread": "1 ongelezen",
- "AI helper": "AI-helper",
+ "AI helper: {0}": "AI-helper: {0}",
  "Automatic": "Automatisch",
  "Automatic ({0})": "Automatisch ({0})",
  "Cancel": "Annuleren",
@@ -35,6 +35,7 @@
  "Saved as {0}": "Bewaard als {0}",
  "Scheduled {0}–{1}": "Gepland {0}–{1}",
  "Screenshot saved": "Schermafbeelding bewaard",
+ "Set in Maprisma Manager → AI": "In te stellen in Maprisma Manager → AI",
  "Slightly rounded ({0} px)": "Licht afgerond ({0} px)",
  "Square": "Hoekig",
  "System ({0})": "Systeem ({0})",

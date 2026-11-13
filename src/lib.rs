@@ -12,4 +12,5 @@ pub mod notify;
 pub mod paths;
 pub mod recorder;
 pub mod settings;
+pub mod shared_ai;
 pub mod shot;

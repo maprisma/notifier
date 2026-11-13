@@ -12,8 +12,9 @@ showing the popups. Maprisma Notifier records what they show and keeps it in a h
 - **Popup / window:** the history grouped by app (the app with the newest notification first,
   newest first inside), an unread dot before new ones (red for critical ones; a click marks one
   read), *Clear* per app, *Mark all read*, *Clear all* (asks first), the **Do not disturb** switch
-  with the schedule, Language, Corners, *F12 saves a screenshot*, *AI helper* (when one is
-  installed) and *Notification settings…*
+  with the schedule, Language, Corners, *F12 saves a screenshot*, *AI helper: …* (when one is
+  installed; it shows the helper and opens Maprisma Manager → AI, where it is chosen) and
+  *Notification settings…*
   (Maprisma Manager's Notifications page).
 - **Do not disturb:** the switch, or a daily schedule (e.g. 22:00–07:00, across midnight), see
   below.
@@ -59,6 +60,10 @@ Hyprland) starts it and it ends with them.
   no root needed) and sends the crash notification itself; it reaches the history like any other.
   At most five crash notifications a minute. Off with `notify_crashes: false` (Maprisma
   Manager: *Report app crashes*).
+- The helper *Check with AI* opens is the one all Maprisma apps use, chosen in Maprisma Manager →
+  AI and saved in `~/.config/maprisma-ai/settings.json` (`"helper": "auto"` or an id); it is read
+  when the button is clicked. A chosen helper that isn't installed (or has no interactive *task*,
+  such as a local model) falls back to the first installed one.
 - AI helpers come from `helpers.json` (shipped here; Maprisma's
   `/usr/lib/maprisma/data/helpers.json` when it is newer): every helper with an interactive
   *task* command whose program is installed (PATH, `~/.local/bin`, `~/.npm-global/bin` or mise).
@@ -71,7 +76,8 @@ Hyprland) starts it and it ends with them.
 | `~/.config/maprisma-notifier/settings.json` | settings, shared with Maprisma Manager (every key optional; writers keep the others) |
 | `~/.local/state/maprisma-notifier/history.jsonl` | the history, one JSON object per line, `0600` |
 | `~/.local/state/maprisma-notifier/history.lock` | held while the history is rewritten |
-| `~/.local/share/maprisma-notifier/helpers.json` | the AI helpers catalog (installed copy of `data/helpers.json`, read by Maprisma Manager) |
+| `~/.config/maprisma-ai/settings.json` | the AI helper all Maprisma apps use (read only; Maprisma Manager → AI writes it) |
+| `~/.local/share/maprisma-notifier/helpers.json` | the AI helpers catalog (installed copy of `data/helpers.json`) |
 | `~/Pictures/Maprisma Notifier/` | F12 screenshots and their notes |
 
 ```json
@@ -92,8 +98,8 @@ Hyprland) starts it and it ends with them.
 }
 ```
 
-- `notify_crashes`: crash notifications on or off. `ai_helper`: `"auto"` (the first installed
-  helper) or a helper id such as `"codex"` (not installed: automatic).
+- `notify_crashes`: crash notifications on or off. `ai_helper`: the old own helper setting
+  (`"auto"` or an id); it counts only while `~/.config/maprisma-ai/settings.json` doesn't exist.
 - `history_max` 50–5000 entries, `history_days` 1–90; the oldest go first, and the file stays
   under 4 MB. Whole numbers only; anything else is the default.
 - `muted_apps`: recorded, but never counted as unread. `hidden_apps`: not recorded.

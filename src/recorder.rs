@@ -209,12 +209,14 @@ impl Reports {
     /// Details / Check with AI on one of ours.
     fn action(&self, id: u32, key: &str, settings: &Settings) {
         let Some(crash) = self.by_id.get(&id).cloned() else { return };
-        let helper = settings.ai_helper.clone();
+        // The helper all Maprisma apps use (Maprisma Manager → AI), read now; the old own
+        // setting only while that file doesn't exist.
+        let old = settings.ai_helper.clone();
         let key = key.to_owned();
         tokio::task::spawn_blocking(move || {
             let result = match key.as_str() {
                 crash::ACTION_DETAILS => crash::open_details(&crash),
-                crash::ACTION_AI => crash::open_ai(&crash, &helper),
+                crash::ACTION_AI => crash::open_ai(&crash, &crate::shared_ai::choice(&old)),
                 _ => return,
             };
             if let Err(error) = result {
