@@ -31,9 +31,15 @@ pub enum Event {
     Notify { sender: String, serial: u32, notify: Notify },
     /// A method return for `destination`'s call `reply_serial`; for a Notify, the server's id.
     Reply { destination: String, reply_serial: u32, server_id: Option<u32> },
-    Closed { id: u32, reason: u32 },
-    Action { id: u32, key: String },
+    /// The server's signals, with their sender's unique name (the recorder takes them only from
+    /// the current owner of [INTERFACE]).
+    Closed { sender: String, id: u32, reason: u32 },
+    Action { sender: String, id: u32, key: String },
+    /// The bus says `org.freedesktop.Notifications` has a new owner (empty: none).
+    OwnerChanged { owner: String },
 }
+
+pub const BUS: &str = "org.freedesktop.DBus";
 
 type Args = (String, u32, String, String, String, Vec<String>, HashMap<String, OwnedValue>, i32);
 
@@ -113,17 +119,23 @@ pub fn event(message: &Message) -> Option<Event> {
             server_id: message.body().deserialize::<u32>().ok(),
         }),
         Type::Signal => {
-            if header.interface()?.as_str() != INTERFACE {
+            let sender = header.sender().map(|s| s.to_string()).unwrap_or_default();
+            if header.interface()?.as_str() == BUS && header.member()?.as_str() == "NameOwnerChanged" {
+                // Only the bus itself sends this (no client can own its name).
+                let (name, _old, new): (String, String, String) = message.body().deserialize().ok()?;
+                return (sender == BUS && name == INTERFACE).then_some(Event::OwnerChanged { owner: new });
+            }
+            if header.interface()?.as_str() != INTERFACE || header.path()?.as_str() != PATH {
                 return None;
             }
             match header.member()?.as_str() {
                 "NotificationClosed" => {
                     let (id, reason): (u32, u32) = message.body().deserialize().ok()?;
-                    Some(Event::Closed { id, reason })
+                    Some(Event::Closed { sender, id, reason })
                 }
                 "ActionInvoked" => {
                     let (id, key): (u32, String) = message.body().deserialize().ok()?;
-                    Some(Event::Action { id, key })
+                    Some(Event::Action { sender, id, key })
                 }
                 _ => None,
             }
@@ -226,12 +238,22 @@ mod tests {
             event(&reply),
             Some(Event::Reply { destination: ":1.42".into(), reply_serial: message.primary_header().serial_num().get(), server_id: Some(42) })
         );
-        let closed = Message::signal(PATH, INTERFACE, "NotificationClosed").unwrap().build(&(42u32, 2u32)).unwrap();
-        assert_eq!(event(&closed), Some(Event::Closed { id: 42, reason: 2 }));
-        let action = Message::signal(PATH, INTERFACE, "ActionInvoked").unwrap().build(&(42u32, "default")).unwrap();
-        assert_eq!(event(&action), Some(Event::Action { id: 42, key: "default".into() }));
+        let closed = Message::signal(PATH, INTERFACE, "NotificationClosed").unwrap().sender(":1.7").unwrap().build(&(42u32, 2u32)).unwrap();
+        assert_eq!(event(&closed), Some(Event::Closed { sender: ":1.7".into(), id: 42, reason: 2 }));
+        let action = Message::signal(PATH, INTERFACE, "ActionInvoked").unwrap().sender(":1.7").unwrap().build(&(42u32, "default")).unwrap();
+        assert_eq!(event(&action), Some(Event::Action { sender: ":1.7".into(), id: 42, key: "default".into() }));
         let other = Message::signal(PATH, "org.example.Other", "NotificationClosed").unwrap().build(&(1u32, 1u32)).unwrap();
         assert_eq!(event(&other), None);
+        // Another object path: not the server's.
+        let elsewhere = Message::signal("/org/example", INTERFACE, "ActionInvoked").unwrap().build(&(42u32, "ai")).unwrap();
+        assert_eq!(event(&elsewhere), None);
+        // A new owner, only when the bus says so and only for the notification server.
+        let owner = |sender: &str, name: &str| {
+            Message::signal("/org/freedesktop/DBus", BUS, "NameOwnerChanged").unwrap().sender(sender).unwrap().build(&(name, ":1.7", ":1.9")).unwrap()
+        };
+        assert_eq!(event(&owner(BUS, INTERFACE)), Some(Event::OwnerChanged { owner: ":1.9".into() }));
+        assert_eq!(event(&owner(":1.5", INTERFACE)), None);
+        assert_eq!(event(&owner(BUS, "org.example.Other")), None);
     }
 
     #[test]

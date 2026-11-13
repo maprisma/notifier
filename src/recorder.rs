@@ -36,8 +36,10 @@ pub fn match_rules() -> Vec<String> {
     vec![
         format!("type='method_call',interface='{i}',member='Notify'"),
         format!("type='method_return',sender='{i}'"),
-        format!("type='signal',interface='{i}',member='NotificationClosed'"),
-        format!("type='signal',interface='{i}',member='ActionInvoked'"),
+        format!("type='signal',interface='{i}',member='NotificationClosed',path='{p}'", p = notify::PATH),
+        format!("type='signal',interface='{i}',member='ActionInvoked',path='{p}'", p = notify::PATH),
+        // Who the server is (its signals count only from it).
+        format!("type='signal',sender='{b}',interface='{b}',member='NameOwnerChanged',arg0='{i}'", b = notify::BUS),
     ]
 }
 
@@ -174,10 +176,8 @@ async fn follow_journal(argv: Vec<String>, sender: tokio::sync::mpsc::Sender<Cra
 /// The recorder's own crash notifications, by the server's id (for their actions).
 #[derive(Default)]
 struct Reports {
-    coalescer: crash::Coalescer,
     by_id: HashMap<u32, Crash>,
     order: VecDeque<u32>,
-    started: Option<Instant>,
 }
 
 impl Reports {
@@ -193,44 +193,6 @@ impl Reports {
                 self.by_id.remove(&old);
             }
         }
-    }
-
-    /// One crash: a notification (or an update of the program's last one), unless crash reports
-    /// are off or too many came in the last minute.
-    async fn report(&mut self, mut crash: Crash, settings: &Settings, connection: &zbus::Connection) {
-        if !settings.notify_crashes {
-            return;
-        }
-        let key = if crash.exe.is_empty() { crash.name.clone() } else { crash.exe.clone() };
-        let now = self.started.get_or_insert_with(Instant::now).elapsed().as_millis() as u64;
-        let (count, replaces_id) = match self.coalescer.decide(&key, now) {
-            crash::Decision::Drop => return,
-            crash::Decision::New => (1, 0),
-            crash::Decision::Update { replaces_id, count } => (count, replaces_id),
-        };
-        let exe = crash.exe.clone();
-        let (name, ai) = tokio::task::spawn_blocking(move || (crash::desktop_name(&exe, &crash::application_dirs()), !crate::helpers::installed().is_empty()))
-            .await
-            .unwrap_or((None, false));
-        if let Some(name) = name {
-            crash.name = name;
-        }
-        let a = crash::notify_args(&crash, count, replaces_id, ai);
-        let body = (a.app_name.as_str(), a.replaces_id, a.app_icon.as_str(), a.summary.as_str(), a.body.as_str(), &a.actions, &a.hints, a.timeout);
-        let call = connection.call_method(Some(notify::INTERFACE), notify::PATH, Some(notify::INTERFACE), "Notify", &body);
-        let id = match tokio::time::timeout(Duration::from_secs(5), call).await {
-            Ok(Ok(reply)) => reply.body().deserialize::<u32>().unwrap_or(0),
-            Ok(Err(error)) => {
-                eprintln!("maprisma-notifier-recorder: crash notification: {error}");
-                0
-            }
-            Err(_) => {
-                eprintln!("maprisma-notifier-recorder: crash notification: no answer");
-                0
-            }
-        };
-        self.coalescer.sent(&key, id);
-        self.remember(id, crash);
     }
 
     /// Details / Check with AI on one of ours.
@@ -250,6 +212,61 @@ impl Reports {
                 eprintln!("maprisma-notifier-recorder: {key}: {error}");
             }
         });
+    }
+}
+
+/// How long "an AI helper is installed" counts before it is looked up again (`mise which` can
+/// take seconds per helper).
+const HELPERS_FRESH: Duration = Duration::from_secs(60);
+
+/// Sends the crash notifications, beside the monitor loop so it never waits for helper lookup,
+/// desktop entries or the server's answer: one per crash (or an update of the program's last
+/// one), unless crash reports are off or too many came in the last minute. Each one sent goes
+/// back to the loop through `sent` (its id, for the actions).
+async fn report_crashes(mut crashes: tokio::sync::mpsc::Receiver<Crash>, settings: tokio::sync::watch::Receiver<Settings>, connection: zbus::Connection, sent: tokio::sync::mpsc::Sender<(u32, Crash)>) {
+    let mut coalescer = crash::Coalescer::default();
+    let started = Instant::now();
+    let mut helpers: Option<(Instant, bool)> = None;
+    while let Some(mut crash) = crashes.recv().await {
+        if !settings.borrow().notify_crashes {
+            continue;
+        }
+        let key = if crash.exe.is_empty() { crash.name.clone() } else { crash.exe.clone() };
+        let now = started.elapsed().as_millis() as u64;
+        let (count, replaces_id) = match coalescer.decide(&key, now) {
+            crash::Decision::Drop => continue,
+            crash::Decision::New => (1, 0),
+            crash::Decision::Update { replaces_id, count } => (count, replaces_id),
+        };
+        let exe = crash.exe.clone();
+        let look_up = helpers.is_none_or(|(at, _)| at.elapsed() >= HELPERS_FRESH);
+        let (name, any) = tokio::task::spawn_blocking(move || (crash::desktop_name(&exe, &crash::application_dirs()), look_up.then(|| !crate::helpers::installed().is_empty())))
+            .await
+            .unwrap_or((None, None));
+        if let Some(any) = any {
+            helpers = Some((Instant::now(), any));
+        }
+        if let Some(name) = name {
+            crash.name = name;
+        }
+        let a = crash::notify_args(&crash, count, replaces_id, helpers.is_some_and(|(_, any)| any));
+        let body = (a.app_name.as_str(), a.replaces_id, a.app_icon.as_str(), a.summary.as_str(), a.body.as_str(), &a.actions, &a.hints, a.timeout);
+        let call = connection.call_method(Some(notify::INTERFACE), notify::PATH, Some(notify::INTERFACE), "Notify", &body);
+        let id = match tokio::time::timeout(Duration::from_secs(5), call).await {
+            Ok(Ok(reply)) => reply.body().deserialize::<u32>().unwrap_or(0),
+            Ok(Err(error)) => {
+                eprintln!("maprisma-notifier-recorder: crash notification: {error}");
+                0
+            }
+            Err(_) => {
+                eprintln!("maprisma-notifier-recorder: crash notification: no answer");
+                0
+            }
+        };
+        coalescer.sent(&key, id);
+        if id != 0 && sent.send((id, crash)).await.is_err() {
+            return;
+        }
     }
 }
 
@@ -307,7 +324,22 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
     let mut applied = Applied { state: if kde_target { false } else { effective }, failing: false };
     applied.sync(effective, target, &connection, &mut kde).await;
 
-    let (crash_sender, mut crashes) = tokio::sync::mpsc::channel::<Crash>(32);
+    // The server's unique name: its NotificationClosed / ActionInvoked count only from it (any
+    // client can emit signals with that interface). Asked after BecomeMonitor, so a change after
+    // this arrives as NameOwnerChanged.
+    let mut server: Option<String> = match zbus::fdo::DBusProxy::new(&connection).await {
+        Ok(dbus) => dbus.get_name_owner(notify::INTERFACE.try_into().expect("a bus name")).await.ok().map(|o| o.to_string()),
+        Err(_) => None,
+    };
+    // Our own unique name: only Notify calls from it are crash reports.
+    let own = connection.unique_name().map(|n| n.to_string()).unwrap_or_default();
+
+    // Crash reports are prepared and sent beside this loop (helper lookup and the desktop name
+    // can take seconds); what was sent comes back through `reported`.
+    let (crash_sender, crashes) = tokio::sync::mpsc::channel::<Crash>(32);
+    let (settings_sender, settings_receiver) = tokio::sync::watch::channel(current.clone());
+    let (reported_sender, mut reported) = tokio::sync::mpsc::channel::<(u32, Crash)>(32);
+    let _reporter = AbortOnDrop(tokio::spawn(report_crashes(crashes, settings_receiver, connection.clone(), reported_sender)));
     let _follower = journal.map(|argv| AbortOnDrop(tokio::spawn(follow_journal(argv, crash_sender.clone()))));
     let mut reports = Reports::default();
 
@@ -318,7 +350,11 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
             message = stream.next() => {
                 let Some(Ok(message)) = message else { break };
                 match notify::event(&message) {
-                    Some(Event::Notify { sender, serial, notify }) => {
+                    Some(Event::Notify { sender, serial, mut notify }) => {
+                        // Crash data only from our own reports; anyone can send these hints.
+                        if sender != own {
+                            notify.crash = None;
+                        }
                         if wanted(&notify, &current) {
                             pending.insert((sender, serial), Pending { notify, at: Instant::now(), time: settings::now_unix() });
                         }
@@ -328,17 +364,21 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
                             record(&p.notify, server_id.unwrap_or(0), p.time, &current);
                         }
                     }
-                    Some(Event::Closed { id, .. }) => { let _ = crate::history::mark_closed(id, false); }
+                    Some(Event::OwnerChanged { owner }) => server = Some(owner).filter(|o| !o.is_empty()),
+                    Some(Event::Closed { sender, id, .. }) if server.as_deref() == Some(sender.as_str()) => {
+                        let _ = crate::history::mark_closed(id, false);
+                    }
                     // The user clicked it: seen.
-                    Some(Event::Action { id, key }) => {
+                    Some(Event::Action { sender, id, key }) if server.as_deref() == Some(sender.as_str()) => {
                         let _ = crate::history::mark_closed(id, true);
                         reports.action(id, &key, &current);
                     }
+                    Some(Event::Closed { .. } | Event::Action { .. }) => {}
                     None => {}
                 }
             }
-            // crash_sender is held here, so this never ends.
-            Some(found) = crashes.recv() => reports.report(found, &current, &connection).await,
+            // The reporter runs as long as this loop.
+            Some((id, crash)) = reported.recv() => reports.remember(id, crash),
             _ = tick.tick() => {
                 let stale: Vec<(String, u32)> = pending.iter().filter(|(_, p)| p.at.elapsed() >= REPLY_WAIT).map(|(k, _)| k.clone()).collect();
                 for key in stale {
@@ -350,6 +390,7 @@ pub async fn run_with(target: Option<crate::dnd::Target>, journal: Option<Vec<St
                 if now_stamp != settings_stamp {
                     settings_stamp = now_stamp;
                     current = settings::load();
+                    settings_sender.send_replace(current.clone());
                 }
                 let effective = settings::effective_dnd(&current, settings::local_minutes());
                 applied.sync(effective, target, &connection, &mut kde).await;
@@ -407,7 +448,8 @@ mod tests {
     #[test]
     fn rules_and_filter() {
         let rules = match_rules();
-        assert_eq!(rules.len(), 4);
+        assert_eq!(rules.len(), 5);
+        assert!(rules[4].contains("NameOwnerChanged") && rules[4].contains("sender='org.freedesktop.DBus'"));
         assert!(rules[0].contains("member='Notify'"));
         let mut settings = Settings::default();
         let n = notify::Notify { app_name: "Spotify".into(), ..Default::default() };
@@ -545,6 +587,143 @@ mod tests {
         recorder.abort();
         settings::set("hidden_apps", None).unwrap();
         settings::set("dnd", None).unwrap();
+    }
+
+    fn fake_server() -> FakeServer {
+        FakeServer { next: 300.into(), inhibited: Default::default(), fail_uninhibit: Default::default(), uninhibit_calls: Default::default(), calls: Default::default() }
+    }
+
+    async fn serve(fake: FakeServer) -> zbus::Connection {
+        zbus::connection::Builder::session().unwrap().name(notify::INTERFACE).unwrap().serve_at(notify::PATH, fake).unwrap().build().await.unwrap()
+    }
+
+    async fn emit(from: &zbus::Connection, member: &str, body: &(impl serde::Serialize + zbus::zvariant::DynamicType)) {
+        from.emit_signal(None::<zbus::names::BusName<'_>>, notify::PATH, notify::INTERFACE, member, body).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run under dbus-run-session with --ignored"]
+    async fn forged_crashes_and_signals_are_ignored() {
+        let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::paths::test_roots();
+        let _ = std::fs::remove_file(crate::paths::history_file());
+        for key in ["hidden_apps", "dnd", "dnd_schedule", "notify_crashes"] {
+            settings::set(key, None).unwrap();
+        }
+        let client = zbus::Connection::session().await.unwrap();
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        for _ in 0..100 {
+            if !dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let server = serve(fake_server()).await;
+        let recorder = tokio::spawn(run_with(None, None));
+        for _ in 0..100 {
+            if dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Another client sends a "crash report" of its own: recorded, but not as a crash.
+        let crash = Crash { pid: 31, exe: "/usr/bin/x; run rm -rf ~".into(), name: "x".into(), signal: "SIGSEGV".into(), time: 0 };
+        let a = crash::notify_args(&crash, 1, 0, true);
+        let reply = client
+            .call_method(Some(notify::INTERFACE), notify::PATH, Some(notify::INTERFACE), "Notify", &(a.app_name.as_str(), 0u32, a.app_icon.as_str(), a.summary.as_str(), a.body.as_str(), &a.actions, &a.hints, a.timeout))
+            .await
+            .unwrap();
+        let forged: u32 = reply.body().deserialize().unwrap();
+        wait_for("the forged entry", || crate::history::load().len() == 1).await;
+        let entry = crate::history::load()[0].clone();
+        assert_eq!((entry.app.as_str(), entry.server_id), ("Crashes", forged));
+        assert_eq!(entry.crash, None);
+
+        // Its signals from anyone but the server: ignored.
+        emit(&client, "ActionInvoked", &(forged, "ai")).await;
+        emit(&client, "NotificationClosed", &(forged, 2u32)).await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let entry = crate::history::load()[0].clone();
+        assert!(!entry.read && !entry.closed, "{entry:?}");
+        // From the server: taken.
+        emit(&server, "NotificationClosed", &(forged, 2u32)).await;
+        wait_for("closed by the server", || crate::history::load()[0].closed).await;
+
+        // A new server takes over: the old one's signals no longer count, the new one's do.
+        let second = send(&client, "Mail", 0, "Hi", HashMap::new()).await;
+        wait_for("second entry", || crate::history::load().len() == 2).await;
+        drop(server);
+        for _ in 0..100 {
+            if !dbus.name_has_owner(notify::INTERFACE.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let new_server = serve(fake_server()).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        emit(&client, "ActionInvoked", &(second, "default")).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!crate::history::load()[1].read);
+        emit(&new_server, "ActionInvoked", &(second, "default")).await;
+        wait_for("read through the new server", || crate::history::load()[1].read).await;
+        recorder.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "run under dbus-run-session with --ignored"]
+    async fn a_slow_crash_report_does_not_hold_up_the_monitor() {
+        let _guard = crate::history::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::paths::test_roots();
+        let _ = std::fs::remove_file(crate::paths::history_file());
+        for key in ["hidden_apps", "dnd", "dnd_schedule", "notify_crashes"] {
+            settings::set(key, None).unwrap();
+        }
+        // No helper anywhere but a `mise` that takes half a second per lookup.
+        let dir = crash::tests::scratch("slow-mise");
+        crash::tests::program(&dir.join("bin"), "mise", "#!/bin/sh\n/usr/bin/sleep 0.5\nexit 1\n");
+        let (old_path, old_home) = (std::env::var_os("PATH"), std::env::var_os("HOME"));
+        // SAFETY: the bus tests run one at a time (LOCK); nothing else reads these meanwhile.
+        unsafe {
+            std::env::set_var("PATH", dir.join("bin"));
+            std::env::set_var("HOME", &dir);
+        }
+        let client = zbus::Connection::session().await.unwrap();
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        for _ in 0..100 {
+            if !dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _server = serve(fake_server()).await;
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let line = format!(r#"{{"MESSAGE_ID":"{}","COREDUMP_EXE":"/usr/bin/notifier-slow-crasher","COREDUMP_COMM":"slow","COREDUMP_SIGNAL_NAME":"SIGSEGV","COREDUMP_UID":"{uid}","COREDUMP_PID":"9","__REALTIME_TIMESTAMP":"1794557523000000"}}"#, crash::MESSAGE_ID);
+        let script = format!("sleep 1; echo '{line}'; exec sleep 60");
+        let recorder = tokio::spawn(run_with(None, Some(vec!["/bin/sh".into(), "-c".into(), script])));
+        for _ in 0..100 {
+            if dbus.name_has_owner(NAME.try_into().unwrap()).await.unwrap() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // The crash comes in after a second; its helper lookup then takes seconds.
+        tokio::time::sleep(Duration::from_millis(1400)).await;
+        let sent = Instant::now();
+        send(&client, "Mail", 0, "While a crash is reported", HashMap::new()).await;
+        for _ in 0..30 {
+            if !crate::history::load().is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let list = crate::history::load();
+        assert_eq!(list.first().map(|e| e.app.as_str()), Some("Mail"), "recorded after {:?}: {list:?}", sent.elapsed());
+        assert_eq!(list.len(), 1, "the crash report should still be on its way");
+        // The crash notification still comes, without "Check with AI".
+        for _ in 0..300 {
+            if crate::history::load().len() == 2 { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let list = crate::history::load();
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert_eq!(list[1].crash.as_ref().map(|c| c.pid), Some(9));
+        recorder.abort();
+        // SAFETY: as above.
+        unsafe {
+            match old_path { Some(p) => std::env::set_var("PATH", p), None => std::env::remove_var("PATH") }
+            match old_home { Some(h) => std::env::set_var("HOME", h), None => std::env::remove_var("HOME") }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

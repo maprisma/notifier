@@ -22,7 +22,9 @@ showing the popups. Maprisma Notifier records what they show and keeps it in a h
   *Crashes*; the same program again within a minute counts up "crashed N times"). *Details* opens
   a terminal with `coredumpctl info`; *Check with AI* (when an AI helper such as Claude Code or
   Codex is installed) opens the helper in a terminal, asked to explain the crash and to change
-  nothing without asking. Crash entries in the window have the same two buttons.
+  nothing without asking; the journal's crash details go into the prompt as a fenced block the
+  helper is told to treat as data, not instructions. That is no security boundary: the helper
+  runs with its usual permissions, you watch it and decide. Crash entries in the window have the same two buttons.
 
 Languages: English, Deutsch, Français, Español, Italiano, Português, Nederlands, Polski (*Language*
 in the popup or the tray menu; *System* follows the locale).
@@ -59,6 +61,9 @@ Hyprland) starts it and it ends with them.
 - Crashes: the recorder follows systemd-coredump's journal entries
   (`journalctl -f -o json MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1`, your own programs only;
   no root needed) and sends the crash notification itself; it reaches the history like any other.
+  Only notifications from the recorder's own bus connection count as crashes (any app could send
+  one named *Crashes*), and only the notification server's own signals (its current owner of
+  `org.freedesktop.Notifications`) mark entries closed or run Details / Check with AI.
   At most five crash notifications a minute. Off with `notify_crashes: false` (Maprisma
   Manager: *Report app crashes*).
 - The helper *Check with AI* opens is the one all Maprisma apps use, chosen in Maprisma Manager →
