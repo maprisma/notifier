@@ -85,7 +85,7 @@ impl Debounce {
 /// window floats and isn't fullscreen. Spawns hyprctl: call it only when a size is to be saved.
 pub fn not_users_size(sharp_corners: bool) -> bool {
     // In a Hyprland session (never in unit tests: they must not ask the real one).
-    if cfg!(test) || std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none_or(|v| v.is_empty()) {
+    if cfg!(test) || !on_hyprland() {
         return sharp_corners;
     }
     let out = std::process::Command::new("hyprctl")
@@ -97,6 +97,34 @@ pub fn not_users_size(sharp_corners: bool) -> bool {
         Ok(out) => hypr_not_users(&out.stdout, std::process::id()).unwrap_or(sharp_corners),
         Err(_) => sharp_corners,
     }
+}
+
+/// Hyprland as look.rs decides the desktop: `MAPRISMA_DESKTOP`, else `XDG_CURRENT_DESKTOP`; only
+/// without both, Hyprland's instance signature with its socket present. A stale
+/// `HYPRLAND_INSTANCE_SIGNATURE` stays in the systemd user environment after a Hyprland session,
+/// so it never counts in a KDE or COSMIC session.
+pub fn hyprland_session(forced: &str, current: &str, socket: impl FnOnce() -> bool) -> bool {
+    let forced = forced.trim().to_ascii_lowercase();
+    if matches!(forced.as_str(), "cosmic" | "kde" | "hyprland" | "other") {
+        return forced == "hyprland";
+    }
+    if !current.trim().is_empty() {
+        return current.split(':').any(|d| d.trim().eq_ignore_ascii_case("hyprland"));
+    }
+    socket()
+}
+
+fn on_hyprland() -> bool {
+    let var = |name: &str| std::env::var(name).unwrap_or_default();
+    hyprland_session(&var("MAPRISMA_DESKTOP"), &var("XDG_CURRENT_DESKTOP"), || {
+        let (runtime, signature) = (var("XDG_RUNTIME_DIR"), var("HYPRLAND_INSTANCE_SIGNATURE"));
+        let signature = signature.trim();
+        !runtime.is_empty()
+            && !signature.is_empty()
+            && signature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            && !signature.starts_with('.')
+            && std::path::Path::new(&runtime).join("hypr").join(signature).join(".socket.sock").exists()
+    })
 }
 
 /// From `hyprctl -j clients`: Some(true) when this pid's window is tiled or fullscreen,
@@ -156,6 +184,22 @@ mod tests {
         assert_eq!(d.flush(|| false), None);
         // Nothing to save: `ignore` is not asked (no hyprctl per tick).
         assert_eq!(d.due(start + SETTLE, || panic!("asked")), None);
+    }
+
+    #[test]
+    fn hyprland_only_in_a_hyprland_session() {
+        // XDG_CURRENT_DESKTOP decides: a stale signature/socket in KDE or COSMIC is not asked.
+        assert!(!hyprland_session("", "KDE", || panic!("asked")));
+        assert!(!hyprland_session("", "COSMIC", || panic!("asked")));
+        assert!(hyprland_session("", "Hyprland", || panic!("asked")));
+        assert!(hyprland_session("", "foo:hyprland", || false));
+        // MAPRISMA_DESKTOP first; a bogus one is ignored.
+        assert!(!hyprland_session("kde", "Hyprland", || true));
+        assert!(hyprland_session("hyprland", "KDE", || false));
+        assert!(!hyprland_session("bogus", "KDE", || true));
+        // Neither set: only a live socket.
+        assert!(hyprland_session("", "", || true));
+        assert!(!hyprland_session("", " ", || false));
     }
 
     #[test]

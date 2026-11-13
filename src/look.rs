@@ -11,9 +11,11 @@
 //!
 //! The same sources and keys as Maprisma Manager's `desktop.look` (desktop_look.dart), so every
 //! Maprisma app shows the same colours. `MAPRISMA_DESKTOP=cosmic|kde|hyprland|other` overrides
-//! the desktop (tests, screenshots). Without `XDG_CURRENT_DESKTOP` (a process started outside
-//! the session's environment) the session's other marks decide: `XDG_SESSION_DESKTOP` /
-//! `DESKTOP_SESSION`, then `HYPRLAND_INSTANCE_SIGNATURE` and `KDE_FULL_SESSION`.
+//! the desktop (tests, screenshots). `XDG_CURRENT_DESKTOP` decides; only without it (a process
+//! started outside the session's environment) the session's other marks do (desktop_in):
+//! `XDG_SESSION_DESKTOP` / `DESKTOP_SESSION`, then Hyprland's instance signature (only when its
+//! socket exists: a stale one stays in the systemd user environment after a Hyprland session),
+//! then Plasma's `KDE_FULL_SESSION`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -46,12 +48,23 @@ pub fn desktop_from(forced: Option<&str>, current: &str) -> Desktop {
     }
 }
 
-/// The desktop when `XDG_CURRENT_DESKTOP` is unset or empty: [session] is
-/// `XDG_SESSION_DESKTOP` and `DESKTOP_SESSION` joined with ':' (names or session-file paths),
-/// then Hyprland's and Plasma's own variables.
-pub fn desktop_from_session(session: &str, hyprland_signature: bool, kde_full_session: bool) -> Desktop {
+/// The session's other marks, asked only when `XDG_CURRENT_DESKTOP` is unset or empty (a
+/// service or wrapper that dropped it).
+#[derive(Debug, Clone, Default)]
+pub struct SessionHints {
+    /// `XDG_SESSION_DESKTOP` and `DESKTOP_SESSION` joined with ':' (names or session-file paths).
+    pub session: String,
+    /// `HYPRLAND_INSTANCE_SIGNATURE` is set and that instance's socket exists ([hyprland_socket_in]).
+    pub hyprland_socket: bool,
+    /// Plasma's `KDE_FULL_SESSION` is "true".
+    pub kde_full_session: bool,
+}
+
+/// The desktop from the session's name(s): `KDE`, `plasma`, `plasmawayland.desktop`, `COSMIC`,
+/// `hyprland-uwsm` …; Other when none is known.
+pub fn session_desktop(session: &str) -> Desktop {
     for name in session.split(':') {
-        let name = name.rsplit('/').next().unwrap_or("").trim_end_matches(".desktop").to_ascii_lowercase();
+        let name = name.rsplit('/').next().unwrap_or("").trim().trim_end_matches(".desktop").to_ascii_lowercase();
         if name == "cosmic" || name.starts_with("cosmic-") {
             return Desktop::Cosmic;
         } else if name == "kde" || name.starts_with("plasma") {
@@ -60,13 +73,39 @@ pub fn desktop_from_session(session: &str, hyprland_signature: bool, kde_full_se
             return Desktop::Hyprland;
         }
     }
-    if hyprland_signature {
+    Desktop::Other
+}
+
+/// MAPRISMA_DESKTOP (when it names a desktop), else XDG_CURRENT_DESKTOP, else the session's
+/// other marks.
+pub fn desktop_in(forced: Option<&str>, current: &str, hints: &SessionHints) -> Desktop {
+    let forced_valid = forced
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|f| matches!(f.as_str(), "cosmic" | "kde" | "hyprland" | "other"));
+    if forced_valid || !current.trim().is_empty() {
+        return desktop_from(forced, current);
+    }
+    match session_desktop(&hints.session) {
+        Desktop::Other => {}
+        found => return found,
+    }
+    if hints.hyprland_socket {
         Desktop::Hyprland
-    } else if kde_full_session {
+    } else if hints.kde_full_session {
         Desktop::Kde
     } else {
         Desktop::Other
     }
+}
+
+/// Whether Hyprland instance `signature` has its socket under `runtime_dir`
+/// (`$XDG_RUNTIME_DIR/hypr/<signature>/.socket.sock`). A signature that isn't a plain name is not.
+pub fn hyprland_socket_in(runtime_dir: &Path, signature: &str) -> bool {
+    let signature = signature.trim();
+    !signature.is_empty()
+        && signature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && !signature.starts_with('.')
+        && runtime_dir.join("hypr").join(signature).join(".socket.sock").exists()
 }
 
 pub fn desktop() -> Desktop {
@@ -74,21 +113,24 @@ pub fn desktop() -> Desktop {
     if cfg!(test) {
         return Desktop::Other;
     }
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    let current = var("XDG_CURRENT_DESKTOP");
+    let var = |name: &str| std::env::var(name).unwrap_or_default();
     let forced = std::env::var("MAPRISMA_DESKTOP").ok();
-    let forced_known = matches!(
-        forced.as_deref().map(str::to_ascii_lowercase).as_deref(),
-        Some("cosmic" | "kde" | "hyprland" | "other")
-    );
-    if !forced_known && current.trim().is_empty() {
-        return desktop_from_session(
-            &format!("{}:{}", var("XDG_SESSION_DESKTOP"), var("DESKTOP_SESSION")),
-            !var("HYPRLAND_INSTANCE_SIGNATURE").is_empty(),
-            var("KDE_FULL_SESSION").eq_ignore_ascii_case("true"),
-        );
+    let current = var("XDG_CURRENT_DESKTOP");
+    if !current.trim().is_empty() {
+        // The usual case: no session marks, no file system.
+        return desktop_from(forced.as_deref(), &current);
     }
-    desktop_from(forced.as_deref(), &current)
+    let runtime = var("XDG_RUNTIME_DIR");
+    desktop_in(
+        forced.as_deref(),
+        &current,
+        &SessionHints {
+            session: format!("{}:{}", var("XDG_SESSION_DESKTOP"), var("DESKTOP_SESSION")),
+            hyprland_socket: !runtime.is_empty()
+                && hyprland_socket_in(Path::new(&runtime), &var("HYPRLAND_INSTANCE_SIGNATURE")),
+            kde_full_session: var("KDE_FULL_SESSION").trim().eq_ignore_ascii_case("true"),
+        },
+    )
 }
 
 /// The desktop's colours as RGB; a missing one keeps libcosmic's.
@@ -353,15 +395,43 @@ mod tests {
     }
 
     #[test]
-    fn desktops_without_xdg_current_desktop() {
-        assert_eq!(desktop_from_session("KDE:plasma", false, false), Desktop::Kde);
-        assert_eq!(desktop_from_session(":/usr/share/wayland-sessions/plasmawayland.desktop", false, false), Desktop::Kde);
-        assert_eq!(desktop_from_session("COSMIC:cosmic", false, false), Desktop::Cosmic);
-        assert_eq!(desktop_from_session("hyprland:hyprland-uwsm", false, false), Desktop::Hyprland);
-        assert_eq!(desktop_from_session(":", true, false), Desktop::Hyprland);
-        assert_eq!(desktop_from_session(":", false, true), Desktop::Kde);
-        assert_eq!(desktop_from_session("gnome:gnome", false, false), Desktop::Other);
-        assert_eq!(desktop_from_session(":", false, false), Desktop::Other);
+    fn desktop_without_xdg_current_desktop() {
+        let none = SessionHints::default();
+        let hints = |s: &str, h: bool, k: bool| SessionHints { session: s.into(), hyprland_socket: h, kde_full_session: k };
+        // XDG_CURRENT_DESKTOP set: the marks are not asked (a stale Hyprland socket included).
+        assert_eq!(desktop_in(None, "KDE", &hints("", true, false)), Desktop::Kde);
+        assert_eq!(desktop_in(None, "COSMIC", &hints("hyprland", true, false)), Desktop::Cosmic);
+        assert_eq!(desktop_in(None, "ubuntu:GNOME", &hints("KDE", false, true)), Desktop::Other);
+        // Unset or empty: the session's marks.
+        assert_eq!(desktop_in(None, "", &none), Desktop::Other);
+        assert_eq!(desktop_in(None, "", &hints("KDE:plasma", false, false)), Desktop::Kde);
+        assert_eq!(desktop_in(None, " ", &hints(":/usr/share/wayland-sessions/plasmawayland.desktop", false, false)), Desktop::Kde);
+        assert_eq!(desktop_in(None, "", &hints("hyprland:hyprland-uwsm", false, false)), Desktop::Hyprland);
+        assert_eq!(desktop_in(None, "", &hints("COSMIC:cosmic", false, false)), Desktop::Cosmic);
+        assert_eq!(desktop_in(None, "", &hints(":", true, false)), Desktop::Hyprland);
+        assert_eq!(desktop_in(None, "", &hints(":", false, true)), Desktop::Kde);
+        assert_eq!(desktop_in(None, "", &hints("gnome:gnome", false, false)), Desktop::Other);
+        // MAPRISMA_DESKTOP still wins, "other" too; a bogus one is ignored.
+        assert_eq!(desktop_in(Some("other"), "", &hints("KDE", true, true)), Desktop::Other);
+        assert_eq!(desktop_in(Some("cosmic"), "", &hints("KDE", false, false)), Desktop::Cosmic);
+        assert_eq!(desktop_in(Some("bogus"), "", &hints("", true, false)), Desktop::Hyprland);
+        assert_eq!(desktop_in(Some("kde"), "Hyprland", &none), Desktop::Kde);
+    }
+
+    #[test]
+    fn hyprland_only_with_its_socket() {
+        let dir = std::env::temp_dir().join(format!("look-hypr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("hypr/live_1")).unwrap();
+        std::fs::write(dir.join("hypr/live_1/.socket.sock"), b"").unwrap();
+        std::fs::create_dir_all(dir.join("hypr/stale_2")).unwrap();
+        assert!(hyprland_socket_in(&dir, "live_1"));
+        assert!(!hyprland_socket_in(&dir, "stale_2"), "signature left over, no socket");
+        assert!(!hyprland_socket_in(&dir, "gone_3"));
+        assert!(!hyprland_socket_in(&dir, ""));
+        assert!(!hyprland_socket_in(&dir, "../hypr/live_1"));
+        assert!(!hyprland_socket_in(&dir, ".."));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

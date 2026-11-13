@@ -43,7 +43,48 @@ pub fn radius(setting: &str, desktop: f32) -> f32 {
 
 /// The desktop's window corners (what "Like the desktop" follows).
 pub fn desktop_radius() -> f32 {
-    crate::look::window_radius().unwrap_or_else(|| cosmic::theme::active().cosmic().corner_radii.radius_m[0])
+    crate::look::window_radius().unwrap_or_else(|| system().cosmic().corner_radii.radius_m[0])
+}
+
+/// The last system (COSMIC Settings) theme libcosmic reported (see [system_theme_update]).
+static SYSTEM: RwLock<Option<cosmic::Theme>> = RwLock::new(None);
+
+/// The theme our corners are put on where the desktop's look has none (COSMIC): libcosmic's
+/// active theme while it is the system's, else the system theme last reported, else read now.
+/// Never the custom theme set_app_theme installed: libcosmic doesn't update a custom theme when
+/// COSMIC's colours or light/dark mode change, so it would keep the old colours.
+fn system() -> cosmic::Theme {
+    let active = cosmic::theme::active();
+    if !matches!(active.theme_type, cosmic::theme::ThemeType::Custom(_)) {
+        return active;
+    }
+    if let Some(theme) = SYSTEM.read().ok().and_then(|s| s.clone()) {
+        return theme;
+    }
+    let theme = cosmic::theme::system_preference();
+    if let Ok(mut stored) = SYSTEM.write() {
+        *stored = Some(theme.clone());
+    }
+    theme
+}
+
+/// For the app's `system_theme_update` (libcosmic calls it when COSMIC's theme or light/dark
+/// mode changes): keeps the new system theme and, in `--window` mode with our own theme in
+/// effect, sets it again on the new colours. The applet popup draws with [apply], which follows
+/// by itself.
+#[allow(dead_code)] // apps with a system_theme_update of their own don't call it
+pub fn system_theme_update<M: Send + 'static>(
+    setting: &str,
+    new_theme: &cosmic::cosmic_theme::Theme,
+    window_mode: bool,
+) -> cosmic::Task<cosmic::Action<M>> {
+    if let Ok(mut stored) = SYSTEM.write() {
+        *stored = Some(cosmic::Theme::system(Arc::new(new_theme.clone())));
+    }
+    match theme(setting) {
+        Some(theme) if window_mode => cosmic::command::set_theme(theme),
+        _ => cosmic::Task::none(),
+    }
 }
 
 pub fn sizes(setting: &str) -> Sizes {
@@ -88,11 +129,15 @@ pub fn theme(setting: &str) -> Option<cosmic::Theme> {
     if normalize(setting) == "desktop" && desktop.is_none() {
         return None;
     }
-    let mut theme = desktop.unwrap_or_else(cosmic::theme::active);
+    Some(with_corners(desktop.unwrap_or_else(system), sizes(setting)))
+}
+
+/// `base` with these corners, as a custom theme.
+fn with_corners(mut theme: cosmic::Theme, sizes: Sizes) -> cosmic::Theme {
     let mut cosmic = theme.cosmic().clone();
-    cosmic.corner_radii = radii(sizes(setting));
+    cosmic.corner_radii = radii(sizes);
     theme.theme_type = cosmic::theme::ThemeType::Custom(Arc::new(cosmic));
-    Some(theme)
+    theme
 }
 
 /// `content` drawn with the desktop's colours and the chosen corners (an applet popup: its
@@ -148,5 +193,24 @@ mod tests {
         assert_eq!((r.radius_xs[0], r.radius_s[0], r.radius_m[0], r.radius_l[0]), (4.0, 8.0, 12.0, 12.0));
         // (theme("desktop") depends on the session's desktop: look.rs's tests cover the colours)
         assert_eq!(theme("rounded").unwrap().cosmic().corner_radii.radius_m, [12.0; 4]);
+    }
+
+    #[test]
+    fn corners_follow_a_new_system_theme() {
+        // A custom theme with our corners is never the base: a COSMIC theme change (light → dark,
+        // a new accent) reaches the window through system_theme_update.
+        let light = cosmic::cosmic_theme::Theme::light_default();
+        let accent = *light.accent_color();
+        let _: cosmic::Task<cosmic::Action<()>> = system_theme_update("square", &light, true);
+        let stored = SYSTEM.read().unwrap().clone().unwrap();
+        assert!(matches!(stored.theme_type, cosmic::theme::ThemeType::System { .. }));
+        let t = with_corners(stored, Sizes::new(0.0));
+        assert!(!t.cosmic().is_dark);
+        assert_eq!(*t.cosmic().accent_color(), accent);
+        assert_eq!(t.cosmic().corner_radii.radius_m, [0.0; 4]);
+        // The corners replace, the colours stay.
+        let again = with_corners(t.clone(), Sizes::new(12.0));
+        assert_eq!(again.cosmic().corner_radii.radius_m, [12.0; 4]);
+        assert_eq!(again.cosmic().bg_color(), t.cosmic().bg_color());
     }
 }
