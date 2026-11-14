@@ -53,7 +53,7 @@ fn main() -> cosmic::iced::Result {
             return Ok(());
         };
         cosmic::app::run::<Notifier<true>>(
-            cosmic::app::Settings::default()
+            cosmic::app::Settings::default().default_font(maprisma_notifier::look::default_font())
                 .size({
                     let (width, height) = window_start_size();
                     cosmic::iced::Size::new(width, height)
@@ -66,6 +66,7 @@ fn main() -> cosmic::iced::Result {
     } else {
         // COSMIC: the applet keeps the recorder running (KDE and Hyprland: the tray does).
         maprisma_notifier::recorder::supervise();
+        maprisma_notifier::look::keep_fonts();
         cosmic::applet::run::<Notifier<false>>(())
     }
 }
@@ -875,6 +876,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        maprisma_notifier::look::keep_fonts();
         if self.window_mode {
             return corners::apply_window(&self.settings.corners, self.popup_content());
         }
@@ -894,6 +896,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     }
 
     fn view_window(&self, _id: window::Id) -> Element<'_, Message> {
+        maprisma_notifier::look::keep_fonts();
         if self.window_mode {
             return corners::apply_window(&self.settings.corners, self.popup_content());
         }

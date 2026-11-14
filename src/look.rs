@@ -9,6 +9,14 @@
 //! - KDE: Plasma's colour scheme (~/.config/kdeglobals), corners 8.
 //! - anything else: libcosmic's theme as it loads.
 //!
+//! Fonts (Maprisma Theme's Font & effects sets them on all three): the interface family for all
+//! text, the monospace one for code, logs and commands ([mono_font]). COSMIC: libcosmic's own
+//! (CosmicTk). KDE: kdeglobals `[General] font` / `fixed`. Hyprland and others: gsettings
+//! `font-name` / `monospace-font-name` (the Pango size dropped). Outside COSMIC the families go
+//! into libcosmic's in-memory toolkit config (never its files), so `text::body`, the headings and
+//! `cosmic::font::*` follow; [keep_fonts] at the top of `view` / `view_window` puts them back
+//! after libcosmic re-reads CosmicTk (it does at start and on every change of COSMIC's config).
+//!
 //! The same sources and keys as Maprisma Manager's `desktop.look` (desktop_look.dart), so every
 //! Maprisma app shows the same colours. `MAPRISMA_DESKTOP=cosmic|kde|hyprland|other` overrides
 //! the desktop (tests, screenshots). `XDG_CURRENT_DESKTOP` decides; only without it (a process
@@ -272,6 +280,139 @@ pub fn read_window_radius(desktop: Desktop) -> Option<f32> {
     }
 }
 
+/// The desktop's (interface, monospace) font families; each None where libcosmic's is right
+/// (COSMIC) or nothing is known.
+pub type FontPair = (Option<String>, Option<String>);
+
+/// A Pango font description without its size: "Noto Sans  10" → "Noto Sans", "Hack, 10.5" →
+/// "Hack" (as Maprisma Manager's `pangoFamily`).
+pub fn pango_family(font: &str) -> String {
+    let font = font.trim();
+    let number = font.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let size = &font[number.len()..];
+    let is_size = !size.is_empty()
+        && size.split('.').count() <= 2
+        && size.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if !is_size || !number.ends_with(char::is_whitespace) {
+        return font.to_string();
+    }
+    let rest = number.trim_end();
+    rest.strip_suffix(',').unwrap_or(rest).trim().to_string()
+}
+
+/// A family from `gsettings get` output ("'Noto Sans  10'\n"); None when it isn't a quoted string.
+pub fn gsettings_family(out: &str) -> Option<String> {
+    let out = out.trim();
+    let inner = out.strip_prefix('\'')?.strip_suffix('\'')?;
+    Some(pango_family(inner))
+}
+
+/// Plasma's interface and fixed families from kdeglobals (the first comma field of
+/// `[General] font` / `fixed`).
+pub fn kde_fonts(text: &str) -> FontPair {
+    let family = |key: &str| ini(text, "General", key).and_then(|v| v.split(',').next().map(str::to_string));
+    (family("font"), family("fixed"))
+}
+
+fn clean_family(family: Option<String>) -> Option<String> {
+    let family = family?.trim().to_string();
+    (!family.is_empty() && family.chars().count() <= 100 && !family.chars().any(char::is_control)).then_some(family)
+}
+
+/// The desktop's fonts from `kdeglobals` (KDE) or `gsettings(key)` (the raw output of `gsettings
+/// get org.gnome.desktop.interface <key>`, Hyprland and others); none on COSMIC.
+pub fn fonts_in(desktop: Desktop, kdeglobals: &Path, gsettings: impl Fn(&str) -> Option<String>) -> FontPair {
+    let (ui, mono) = match desktop {
+        Desktop::Cosmic => return (None, None),
+        Desktop::Kde => read_small(kdeglobals, 1024 * 1024).map(|t| kde_fonts(&t)).unwrap_or_default(),
+        Desktop::Hyprland | Desktop::Other => {
+            let family = |key: &str| gsettings(key).as_deref().and_then(gsettings_family);
+            (family("font-name"), family("monospace-font-name"))
+        }
+    };
+    (clean_family(ui), clean_family(mono))
+}
+
+fn gsettings(key: &str) -> Option<String> {
+    let out = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", key])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The running desktop's (interface, monospace) font families, read now; (None, None) on COSMIC
+/// (libcosmic reads CosmicTk itself) and in unit tests.
+pub fn desktop_fonts() -> FontPair {
+    if cfg!(test) {
+        return (None, None);
+    }
+    fonts_in(desktop(), &xdg("XDG_CONFIG_HOME", ".config").join("kdeglobals"), gsettings)
+}
+
+/// A family name for `iced::font::Family::Name` (kept for the process, each name once).
+fn static_family(family: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(name) = names.get(family) {
+        return name;
+    }
+    let name: &'static str = family.to_string().leak();
+    names.insert(name);
+    name
+}
+
+/// `base` in `family` (weight, stretch and style stay `base`'s); `base` itself without one.
+pub fn font_in(family: Option<&str>, base: cosmic::font::Font) -> cosmic::font::Font {
+    match family {
+        Some(f) => cosmic::font::Font { family: cosmic::iced::font::Family::Name(static_family(f)), ..base },
+        None => base,
+    }
+}
+
+/// The interface font for `cosmic::app::Settings::default_font`: the desktop's family outside
+/// COSMIC, libcosmic's otherwise.
+#[allow(dead_code)] // panel-only applets have no app Settings (keep_fonts sets theirs)
+pub fn default_font() -> cosmic::font::Font {
+    keep_fonts();
+    with_state(|s| font_in(s.fonts.0.as_deref(), cosmic::font::default()))
+}
+
+/// The monospace font for code, logs and commands: the desktop's family outside COSMIC,
+/// libcosmic's (`cosmic::font::mono()`) otherwise.
+#[allow(dead_code)] // not every app shows monospace text
+pub fn mono_font() -> cosmic::font::Font {
+    with_state(|s| font_in(s.fonts.1.as_deref(), cosmic::font::mono()))
+}
+
+/// The desktop's families into libcosmic's in-memory toolkit config (outside COSMIC, where they
+/// are known); nothing is written to disk. Cheap when they are in already: called at start and at
+/// the top of every `view` / `view_window`.
+pub fn keep_fonts() {
+    let (ui, mono) = with_state(|s| s.fonts.clone());
+    if ui.is_none() && mono.is_none() {
+        return;
+    }
+    let differs = |tk: &cosmic::config::CosmicTk| {
+        ui.as_ref().is_some_and(|f| tk.interface_font.family != *f)
+            || mono.as_ref().is_some_and(|f| tk.monospace_font.family != *f)
+    };
+    if !cosmic::config::COSMIC_TK.read().map(|tk| differs(&tk)).unwrap_or(false) {
+        return;
+    }
+    if let Ok(mut tk) = cosmic::config::COSMIC_TK.write() {
+        if let Some(f) = &ui {
+            tk.interface_font.family = f.clone();
+        }
+        if let Some(f) = &mono {
+            tk.monospace_font.family = f.clone();
+        }
+    }
+}
+
 fn srgb([r, g, b]: [u8; 3]) -> cosmic::cosmic_theme::palette::Srgb {
     cosmic::cosmic_theme::palette::Srgb::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
 }
@@ -310,6 +451,7 @@ pub fn theme_from(palette: &Palette, radius: Option<f32>) -> cosmic::Theme {
 struct State {
     palette: Option<Palette>,
     radius: Option<f32>,
+    fonts: FontPair,
     read: std::time::Instant,
     radius_read: std::time::Instant,
 }
@@ -320,15 +462,26 @@ static STATE: RwLock<Option<State>> = RwLock::new(None);
 pub fn reload() -> bool {
     let d = desktop();
     let now = std::time::Instant::now();
-    let fresh = State { palette: read_palette(d), radius: read_window_radius(d), read: now, radius_read: now };
+    let fresh = State {
+        palette: read_palette(d),
+        radius: read_window_radius(d),
+        fonts: desktop_fonts(),
+        read: now,
+        radius_read: now,
+    };
     let Ok(mut state) = STATE.write() else { return false };
-    let changed = state.as_ref().is_none_or(|s| s.palette != fresh.palette || s.radius != fresh.radius);
+    let changed = state
+        .as_ref()
+        .is_none_or(|s| s.palette != fresh.palette || s.radius != fresh.radius || s.fonts != fresh.fonts);
     *state = Some(fresh);
+    drop(state);
+    keep_fonts();
     changed
 }
 
 /// [reload] for a periodic tick (where the app re-reads its settings): the colour files at most
-/// every 5 s, Hyprland's rounding (a process) every 30 s; true when something changed.
+/// every 5 s, Hyprland's rounding and the fonts (processes) every 30 s; true when something
+/// changed.
 pub fn refresh() -> bool {
     let d = desktop();
     // The read lock ends with this statement: reload() below takes the write lock (a guard held
@@ -342,18 +495,25 @@ pub fn refresh() -> bool {
         return false;
     }
     let palette = read_palette(d);
-    let radius = if radius_due { Some(read_window_radius(d)) } else { None };
+    let radius = if radius_due { Some((read_window_radius(d), desktop_fonts())) } else { None };
     let Ok(mut guard) = STATE.write() else { return false };
     let Some(state) = guard.as_mut() else { return false };
     let mut changed = state.palette != palette;
     state.palette = palette;
     state.read = std::time::Instant::now();
-    if let Some(radius) = radius {
+    let mut fonts_changed = false;
+    if let Some((radius, fonts)) = radius {
         changed |= state.radius != radius;
+        fonts_changed = state.fonts != fonts;
         state.radius = radius;
+        state.fonts = fonts;
         state.radius_read = state.read;
     }
-    changed
+    drop(guard);
+    if fonts_changed {
+        keep_fonts();
+    }
+    changed || fonts_changed
 }
 
 fn with_state<T>(f: impl FnOnce(&State) -> T) -> T {
@@ -469,6 +629,73 @@ mod tests {
         let p = kde_palette("[General]\nAccentColor=1,2,3\n[Colors:Selection]\nBackgroundNormal=61,174,233\n");
         assert_eq!(p.accent, Some([1, 2, 3]));
         assert_eq!(kde_palette("[Colors:Window]\nBackgroundNormal=300,0,0\n").background, None);
+    }
+
+    #[test]
+    fn pango_sizes_dropped() {
+        assert_eq!(pango_family("Noto Sans  10"), "Noto Sans");
+        assert_eq!(pango_family("Hack, 10.5"), "Hack");
+        assert_eq!(pango_family("Cantarell 11"), "Cantarell");
+        assert_eq!(pango_family("  JetBrains Mono Bold 12 "), "JetBrains Mono Bold");
+        assert_eq!(pango_family("Cantarell"), "Cantarell");
+        assert_eq!(pango_family("Font10"), "Font10");
+        assert_eq!(pango_family("Source Code Pro 3D"), "Source Code Pro 3D");
+        assert_eq!(pango_family("Weird 1.2.3"), "Weird 1.2.3");
+        assert_eq!(gsettings_family("'Noto Sans  10'\n"), Some("Noto Sans".into()));
+        assert_eq!(gsettings_family("'Hack, 10.5'"), Some("Hack".into()));
+        assert_eq!(gsettings_family("No such key \"font-name\""), None);
+        assert_eq!(gsettings_family(""), None);
+    }
+
+    #[test]
+    fn kde_font_families() {
+        let text = "[General]\nfixed=Hack,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1\nfont=Noto Sans,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1\n\
+                    [WM]\nfont=Other,10\n";
+        assert_eq!(kde_fonts(text), (Some("Noto Sans".into()), Some("Hack".into())));
+        assert_eq!(kde_fonts("[WM]\nfont=Other,10\n"), (None, None));
+    }
+
+    #[test]
+    fn fonts_per_desktop() {
+        let dir = std::env::temp_dir().join(format!("look-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kdeglobals = dir.join("kdeglobals");
+        std::fs::write(&kdeglobals, "[General]\nfont=Inter,10,-1\nfixed=Fira Code,9\n").unwrap();
+        let gtk = |key: &str| match key {
+            "font-name" => Some("'Noto Sans  10'\n".to_string()),
+            "monospace-font-name" => Some("'Hack, 10.5'\n".to_string()),
+            _ => None,
+        };
+        let asked = std::cell::Cell::new(false);
+        let gtk_asked = |key: &str| {
+            asked.set(true);
+            gtk(key)
+        };
+        assert_eq!(fonts_in(Desktop::Cosmic, &kdeglobals, gtk_asked), (None, None));
+        assert!(!asked.get(), "COSMIC: libcosmic reads its own fonts");
+        assert_eq!(fonts_in(Desktop::Kde, &kdeglobals, gtk_asked), (Some("Inter".into()), Some("Fira Code".into())));
+        assert!(!asked.get(), "KDE: kdeglobals, not gsettings");
+        assert_eq!(fonts_in(Desktop::Kde, &dir.join("missing"), gtk), (None, None));
+        assert_eq!(fonts_in(Desktop::Hyprland, &kdeglobals, gtk), (Some("Noto Sans".into()), Some("Hack".into())));
+        assert_eq!(fonts_in(Desktop::Other, &kdeglobals, gtk), (Some("Noto Sans".into()), Some("Hack".into())));
+        assert_eq!(fonts_in(Desktop::Hyprland, &kdeglobals, |_| None), (None, None));
+        assert_eq!(fonts_in(Desktop::Hyprland, &kdeglobals, |_| Some("''".into())), (None, None));
+        std::fs::write(&kdeglobals, "[General]\nfont= ,10\n").unwrap();
+        assert_eq!(fonts_in(Desktop::Kde, &kdeglobals, gtk), (None, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fonts_take_the_family() {
+        let base = cosmic::font::Font { weight: cosmic::iced::font::Weight::Bold, ..cosmic::font::Font::DEFAULT };
+        let f = font_in(Some("Inter"), base);
+        assert_eq!(f.family, cosmic::iced::font::Family::Name("Inter"));
+        assert_eq!(f.weight, cosmic::iced::font::Weight::Bold);
+        assert_eq!(font_in(None, base), base);
+        assert!(std::ptr::eq(static_family("Inter"), static_family("Inter")));
+        // Unit tests know no desktop: libcosmic's fonts stay.
+        assert_eq!(desktop_fonts(), (None, None));
     }
 
     #[test]
