@@ -1,7 +1,9 @@
 //! Layout rule 5a: the size the user gave the `--window` window, remembered for the next open.
 //! The same file in every Maprisma Rust app: the app keeps `to_value(size)` under `KEY` in its own
 //! settings file and starts the window with `parse(saved).unwrap_or(default)`. Nothing here
-//! touches files, so all of it is tested below.
+//! touches files, so all of it is tested below. On Hyprland the window's place is remembered too
+//! (`POSITION_KEY`): read from hyprctl when it closes, and put back with a move after it opens
+//! (a Wayland window can't place itself; Hyprland's tray rule puts it under the bar first).
 
 use std::time::{Duration, Instant};
 
@@ -137,6 +139,97 @@ pub fn hypr_not_users(clients: &[u8], pid: u32) -> Option<bool> {
     Some(!floating || fullscreen)
 }
 
+/// The settings key of the window's place on Hyprland.
+pub const POSITION_KEY: &str = "window_position";
+
+pub type Position = (i32, i32);
+
+/// `{"x": x, "y": y}` from the settings; a missing or broken value is None.
+pub fn parse_position(value: Option<&Value>) -> Option<Position> {
+    let value = value?;
+    let get = |k: &str| value.get(k)?.as_i64().and_then(|v| i32::try_from(v).ok());
+    Some((get("x")?, get("y")?))
+}
+
+pub fn position_value(position: Position) -> Value {
+    json!({ "x": position.0, "y": position.1 })
+}
+
+/// From `hyprctl -j clients`: where this pid's window is, when it floats and isn't fullscreen
+/// (a tiled or fullscreen place is not the user's).
+pub fn hypr_position(clients: &[u8], pid: u32) -> Option<Position> {
+    if hypr_not_users(clients, pid)? {
+        return None;
+    }
+    let list: Value = serde_json::from_slice(clients).ok()?;
+    let me = list.as_array()?.iter().find(|c| c["pid"].as_u64() == Some(pid as u64))?;
+    let at = me["at"].as_array()?;
+    Some((i32::try_from(at.first()?.as_i64()?).ok()?, i32::try_from(at.get(1)?.as_i64()?).ok()?))
+}
+
+/// From `hyprctl -j monitors`: whether a window placed at `position` (its top left corner) with
+/// `size` stays at least 48 px on a screen, so a place on a screen that is gone isn't used.
+pub fn on_a_monitor(monitors: &[u8], position: Position, size: Size) -> bool {
+    let Ok(list) = serde_json::from_slice::<Value>(monitors) else { return false };
+    let Some(list) = list.as_array() else { return false };
+    let (x, y) = (position.0 as f64, position.1 as f64);
+    let w = size.0 as f64;
+    list.iter().any(|m| {
+        let scale = m["scale"].as_f64().filter(|s| *s > 0.0).unwrap_or(1.0);
+        let (Some(mx), Some(my), Some(mw), Some(mh)) = (m["x"].as_f64(), m["y"].as_f64(), m["width"].as_f64(), m["height"].as_f64()) else {
+            return false;
+        };
+        let (mw, mh) = (mw / scale, mh / scale);
+        x + w - 48.0 >= mx && x + 48.0 <= mx + mw && y >= my && y + 48.0 <= my + mh
+    })
+}
+
+fn hyprctl(args: &[&str]) -> Option<Vec<u8>> {
+    let out = std::process::Command::new("hyprctl")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// Where the user left this process's window (Hyprland only; None elsewhere, in unit tests, or
+/// when it is tiled or fullscreen). Spawns hyprctl: call it when the window closes.
+pub fn current_position() -> Option<Position> {
+    if cfg!(test) || !on_hyprland() {
+        return None;
+    }
+    hypr_position(&hyprctl(&["-j", "clients"])?, std::process::id())
+}
+
+/// Puts this process's window back at `position` once Hyprland lists it (asked every 50 ms for
+/// up to 3 s, in a thread of its own), when the place is still on a screen. Hyprland only.
+pub fn restore_position(position: Option<Position>, size: Size) {
+    let Some(position) = position else { return };
+    if cfg!(test) || !on_hyprland() {
+        return;
+    }
+    let pid = std::process::id();
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(50));
+            let Some(clients) = hyprctl(&["-j", "clients"]) else { return };
+            if hypr_not_users(&clients, pid).is_none() {
+                continue; // not mapped yet
+            }
+            if hypr_position(&clients, pid) == Some(position) {
+                return;
+            }
+            if hyprctl(&["-j", "monitors"]).is_some_and(|m| on_a_monitor(&m, position, size)) {
+                let lua = format!("hl.dispatch(hl.dsp.window.move({{ x = {}, y = {}, window = 'pid:{pid}' }}))", position.0, position.1);
+                hyprctl(&["eval", &lua]);
+            }
+            return;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +305,28 @@ mod tests {
         assert_eq!(hypr_not_users(clients, 43), Some(true));
         assert_eq!(hypr_not_users(clients, 99), None);
         assert_eq!(hypr_not_users(b"oops", 42), None);
+    }
+
+    #[test]
+    fn positions_from_hyprctl_and_settings() {
+        let clients = br#"[{"pid": 7, "floating": true, "fullscreen": 0, "at": [2860, 42], "size": [560, 700]},
+                           {"pid": 8, "floating": false, "fullscreen": 0, "at": [0, 0], "size": [10, 10]}]"#;
+        assert_eq!(hypr_position(clients, 7), Some((2860, 42)));
+        assert_eq!(hypr_position(clients, 8), None); // tiled
+        assert_eq!(hypr_position(clients, 9), None);
+        assert_eq!(parse_position(Some(&position_value((-20, 42)))), Some((-20, 42)));
+        assert_eq!(parse_position(Some(&json!({"x": "1"}))), None);
+        assert_eq!(parse_position(None), None);
+    }
+
+    #[test]
+    fn a_place_must_stay_on_a_screen() {
+        // 4K at scale 2: 1920×1080 logical
+        let monitors = br#"[{"x": 0, "y": 0, "width": 3840, "height": 2160, "scale": 2.0}]"#;
+        assert!(on_a_monitor(monitors, (1300, 42), (560.0, 700.0)));
+        assert!(on_a_monitor(monitors, (-500, 42), (560.0, 700.0))); // 60 px still on it
+        assert!(!on_a_monitor(monitors, (2000, 42), (560.0, 700.0)));
+        assert!(!on_a_monitor(monitors, (100, 1070), (560.0, 700.0)));
+        assert!(!on_a_monitor(b"nonsense", (0, 0), (560.0, 700.0)));
     }
 }

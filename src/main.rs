@@ -579,6 +579,10 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
         if let Some(size) = size {
             self.setting_error = write_pref(window_size::KEY, Some(window_size::to_value(size))).is_err();
         }
+        // Hyprland: where the user left it, for the next open (a move sends no event, so on close).
+        if closing && let Some(position) = window_size::current_position() {
+            self.setting_error |= write_pref(window_size::POSITION_KEY, Some(window_size::position_value(position))).is_err();
+        }
     }
 
     // A capture still on its way is dropped with its popup; a typed note is kept (saved).
@@ -621,6 +625,8 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
         corners::set_current(&app.settings.corners);
         if app.window_mode {
             app.resize = window_size::Debounce::new(window_start_size());
+            // Hyprland: back where the user left it (the tray rule first puts it under the bar).
+            window_size::restore_position(window_size::parse_position(read_pref(window_size::POSITION_KEY).as_ref()), window_start_size());
         }
         let task = if app.window_mode {
             app.set_header_title(tr("Maprisma Notifier"));
