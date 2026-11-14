@@ -184,6 +184,12 @@ pub fn on_a_monitor(monitors: &[u8], position: Position, size: Size) -> bool {
     })
 }
 
+/// An off-screen screenshot run (`MAPRISMA_OFFSHOT`, set by maprisma-layout's offshot.sh): the
+/// window stays where the run put it and its place there is never saved over the user's.
+fn offshot() -> bool {
+    std::env::var_os("MAPRISMA_OFFSHOT").is_some_and(|v| !v.is_empty())
+}
+
 fn hyprctl(args: &[&str]) -> Option<Vec<u8>> {
     let out = std::process::Command::new("hyprctl")
         .args(args)
@@ -197,7 +203,7 @@ fn hyprctl(args: &[&str]) -> Option<Vec<u8>> {
 /// Where the user left this process's window (Hyprland only; None elsewhere, in unit tests, or
 /// when it is tiled or fullscreen). Spawns hyprctl: call it when the window closes.
 pub fn current_position() -> Option<Position> {
-    if cfg!(test) || !on_hyprland() {
+    if cfg!(test) || offshot() || !on_hyprland() {
         return None;
     }
     hypr_position(&hyprctl(&["-j", "clients"])?, std::process::id())
@@ -207,7 +213,7 @@ pub fn current_position() -> Option<Position> {
 /// up to 3 s, in a thread of its own), when the place is still on a screen. Hyprland only.
 pub fn restore_position(position: Option<Position>, size: Size) {
     let Some(position) = position else { return };
-    if cfg!(test) || !on_hyprland() {
+    if cfg!(test) || offshot() || !on_hyprland() {
         return;
     }
     let pid = std::process::id();
