@@ -613,6 +613,8 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     }
 
     fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
+        let mut core = core;
+        maprisma_notifier::look::solid(&mut core);
         let mut app = Self { core, window_mode: WINDOW_MODE, ..Default::default() };
         app.reload(true);
         corners::set_current(&app.settings.corners);

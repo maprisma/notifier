@@ -380,6 +380,13 @@ pub fn window_background(theme: &cosmic::Theme) -> cosmic::iced::Background {
     cosmic::iced::Background::Color(theme.cosmic().bg_color().into())
 }
 
+/// Maprisma's windows and panel popups stay opaque, also when the COSMIC theme has frosted windows
+/// or applets on: libcosmic would draw its see-through background then (the user's choice,
+/// 2026-11-14: all solid). Called at the start of every app's `init`.
+pub fn solid(core: &mut cosmic::app::Core) {
+    core.set_auto_blur(Default::default());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
