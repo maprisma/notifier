@@ -163,6 +163,8 @@ struct Notifier<const WINDOW_MODE: bool> {
     capturing: bool,
     corners_open: bool,
     setting_error: bool,
+    /// The settings page (Language, F12, Corners, AI helper) is shown instead of the history.
+    settings_open: bool,
     resize: window_size::Debounce,
     // Check with AI: the installed helpers (looked up off the UI thread now and then) and the
     // helper all Maprisma apps use (Maprisma Settings → AI), re-read on every tick.
@@ -202,6 +204,7 @@ enum Message {
     SetShotKey(bool),
     ToggleCorners,
     Corners(String),
+    ToggleSettings,
     CrashDetails(Crash),
     CrashAi(Crash),
     Opened(Result<(), String>),
@@ -218,14 +221,17 @@ enum EscStep {
     Confirm,
     /// Close the open Language / Corners list.
     Menus,
+    /// Leave the settings page.
+    Back,
     /// Close the window (`--window`) or the popup.
     Close,
     Nothing,
 }
 
 /// `note`: the screenshot card shows; `confirm`: "Clear all?" asks; `menus`: a list is open;
-/// `shown`: Esc came from the window or the open popup (not the panel button).
-fn esc_step(note: bool, confirm: bool, menus: bool, shown: bool) -> EscStep {
+/// `settings`: the settings page shows; `shown`: Esc came from the window or the open popup
+/// (not the panel button).
+fn esc_step(note: bool, confirm: bool, menus: bool, settings: bool, shown: bool) -> EscStep {
     if !shown {
         EscStep::Nothing
     } else if note {
@@ -234,6 +240,8 @@ fn esc_step(note: bool, confirm: bool, menus: bool, shown: bool) -> EscStep {
         EscStep::Confirm
     } else if menus {
         EscStep::Menus
+    } else if settings {
+        EscStep::Back
     } else {
         EscStep::Close
     }
@@ -362,6 +370,12 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             icon::from_name(bar_icon(self.dnd, unread)).size(32).symbolic(true).icon(),
             column![text::title4(tr("Maprisma Notifier")), dim(status_line(unread, self.dnd))].spacing(2),
             space::horizontal().width(Length::Fill),
+            // Settings at the header's right end, as in Maprisma Launcher.
+            cosmic::widget::tooltip(
+                button::icon(icon::from_name("emblem-system-symbolic").symbolic(true)).on_press(Message::ToggleSettings),
+                text::body(tr("Settings")),
+                cosmic::widget::tooltip::Position::Bottom,
+            ),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -464,42 +478,6 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             actions = actions.push(menu_button(text::body(tr("Mark all read"))).on_press_maybe((self.unread() > 0).then_some(Message::MarkAllRead)));
             actions = actions.push(menu_button(text::body(tr("Clear all"))).on_press_maybe((!self.entries.is_empty()).then_some(Message::AskClearAll)));
         }
-        actions = actions.push(divider::horizontal::default());
-        actions = actions.push(menu_button(text::body(tr("Language"))).on_press(Message::ToggleLanguage));
-        if self.language_error {
-            actions = actions.push(text::body(tr("Could not save the language setting.")));
-        }
-        if self.language_open {
-            for (code, label) in language_options() {
-                actions = actions.push(menu_button(text::body(label)).on_press(Message::Language(code)));
-            }
-            return actions.into();
-        }
-        actions = actions.push(padded_control(
-            row![text::body(tr("F12 saves a screenshot")), space::horizontal().width(Length::Fill), cosmic::widget::toggler(self.settings.screenshot_key).on_toggle(Message::SetShotKey)]
-                .align_y(Alignment::Center),
-        ));
-        actions = actions.push(menu_button(text::body(tr("Corners"))).on_press(Message::ToggleCorners));
-        if self.corners_open {
-            let desktop = corners::desktop_radius().round().to_string();
-            for (choice, label) in [
-                ("desktop", trf("Like the desktop ({0} px)", &[desktop])),
-                ("slight", trf("Slightly rounded ({0} px)", &["6".into()])),
-                ("rounded", trf("Rounded ({0} px)", &["12".into()])),
-                ("square", tr("Square")),
-            ] {
-                let label = if self.settings.corners == choice { format!("✓ {label}") } else { label };
-                actions = actions.push(menu_button(text::body(label)).on_press(Message::Corners(choice.into())));
-            }
-        }
-        if !self.helpers.is_empty() {
-            // Chosen for all Maprisma apps in Maprisma Settings → AI (a click opens that page).
-            let label = trf("AI helper: {0}", &[helper_label(&self.helpers, &self.shared_helper)]);
-            actions = actions.push(
-                menu_button(column![text::body(label), text::caption(tr("Set in Maprisma Settings → AI"))].spacing(2)).on_press(Message::OpenAiSettings),
-            );
-        }
-        actions = actions.push(menu_button(text::body(tr("Notification settings…"))).on_press(Message::OpenSettings));
         if self.setting_error {
             actions = actions.push(text::body(tr("Could not save the setting.")));
         }
@@ -509,9 +487,77 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
         actions.into()
     }
 
+    /// Settings (as Maprisma Launcher's page): ← Back and the title, then one row per setting,
+    /// words at the left and the control at the right; a list opens under its row.
+    fn settings_page(&self) -> Element<'_, Message> {
+        let header = row![
+            button::text(tr("Back")).leading_icon(icon::from_name("go-previous-symbolic").size(16)).on_press(Message::ToggleSettings),
+            space::horizontal().width(Length::Fill),
+            dim(tr("Settings").to_uppercase()),
+        ]
+        .align_y(Alignment::Center);
+        let choice = |label: String, open: bool, message: Message| -> Element<'_, Message> {
+            button::text(label)
+                .trailing_icon(icon::from_name(if open { "pan-up-symbolic" } else { "pan-down-symbolic" }).size(16))
+                .on_press(message)
+                .into()
+        };
+        let setting = |words: Element<'static, Message>, control: Element<'static, Message>| {
+            padded_control(row![container(words).width(Length::Fill), control].spacing(12).align_y(Alignment::Center))
+        };
+        let options = language_options();
+        let current = options.iter().find_map(|(_, l)| l.strip_prefix("✓ ").map(str::to_owned)).unwrap_or_default();
+        let mut page = column![padded_control(header), divider::horizontal::default()];
+        page = page.push(setting(text::body(tr("Language")).into(), choice(current, self.language_open, Message::ToggleLanguage)));
+        if self.language_error {
+            page = page.push(padded_control(text::body(tr("Could not save the language setting."))));
+        }
+        if self.language_open {
+            for (code, label) in options {
+                page = page.push(menu_button(text::body(label)).on_press(Message::Language(code)));
+            }
+        }
+        page = page.push(setting(
+            text::body(tr("F12 saves a screenshot")).into(),
+            cosmic::widget::toggler(self.settings.screenshot_key).on_toggle(Message::SetShotKey).into(),
+        ));
+        let desktop = corners::desktop_radius().round().to_string();
+        let corner_choices = [
+            ("desktop", trf("Like the desktop ({0} px)", &[desktop])),
+            ("slight", trf("Slightly rounded ({0} px)", &["6".into()])),
+            ("rounded", trf("Rounded ({0} px)", &["12".into()])),
+            ("square", tr("Square")),
+        ];
+        let current = corner_choices.iter().find(|(c, _)| *c == self.settings.corners).map(|(_, l)| l.clone()).unwrap_or_default();
+        page = page.push(setting(text::body(tr("Corners")).into(), choice(current, self.corners_open, Message::ToggleCorners)));
+        if self.corners_open {
+            for (choice, label) in corner_choices {
+                let label = if self.settings.corners == choice { format!("✓ {label}") } else { label };
+                page = page.push(menu_button(text::body(label)).on_press(Message::Corners(choice.into())));
+            }
+        }
+        if !self.helpers.is_empty() {
+            // Chosen for all Maprisma apps in Maprisma Settings → AI (the button opens that page).
+            page = page.push(setting(
+                column![text::body(tr("AI helper")), dim(tr("Set in Maprisma Settings → AI"))].spacing(2).into(),
+                button::text(helper_label(&self.helpers, &self.shared_helper)).on_press(Message::OpenAiSettings).into(),
+            ));
+        }
+        // Muted apps, the schedule and the rest live in Maprisma Settings → Notifications.
+        page = page.push(setting(text::body(tr("Notification settings")).into(), button::text(tr("Open…")).on_press(Message::OpenSettings).into()));
+        if self.setting_error {
+            page = page.push(padded_control(text::body(tr("Could not save the setting."))));
+        }
+        let page = page.width(if self.window_mode { Length::Fill } else { Length::Fixed(POPUP_WIDTH) }).padding([0, 0, 8, 0]);
+        scrollable(page).height(if self.window_mode { Length::Fill } else { Length::Shrink }).into()
+    }
+
     fn popup_content(&self) -> Element<'_, Message> {
         if let Some(overlay) = self.shot_overlay() {
             return overlay;
+        }
+        if self.settings_open {
+            return self.settings_page();
         }
         let top = column![self.header(), divider::horizontal::default(), self.dnd_row(), divider::horizontal::default()].spacing(8);
         let top = container(top).padding([12, 16, 4, 16]).width(Length::Fill);
@@ -522,11 +568,6 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             container(list.height(Length::Shrink)).max_height(POPUP_LIST_HEIGHT).into()
         };
         let actions = self.actions();
-        let actions: Element<Message> = if self.language_open && !self.window_mode {
-            scrollable(actions).height(Length::Fixed(320.0)).into()
-        } else {
-            actions
-        };
         column![top, list, actions]
             .width(if self.window_mode { Length::Fill } else { Length::Fixed(POPUP_WIDTH) })
             .padding([0, 0, 8, 0])
@@ -621,6 +662,8 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
         let mut core = core;
         maprisma_notifier::look::solid(&mut core);
         let mut app = Self { core, window_mode: WINDOW_MODE, ..Default::default() };
+        // Debug builds only: start on the settings page (for off-screen screenshots).
+        app.settings_open = cfg!(debug_assertions) && std::env::var("MAPRISMA_SHOT_PAGE").as_deref() == Ok("settings");
         app.reload(true);
         corners::set_current(&app.settings.corners);
         if app.window_mode {
@@ -789,13 +832,14 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             },
             Message::Escape(id) => {
                 let shown = if self.window_mode { self.core.main_window_id() == Some(id) } else { self.popup == Some(id) };
-                match esc_step(self.shot.open(), self.confirm_clear, self.language_open || self.corners_open, shown) {
+                match esc_step(self.shot.open(), self.confirm_clear, self.language_open || self.corners_open, self.settings_open, shown) {
                     EscStep::Note => return self.finish_note(false),
                     EscStep::Confirm => self.confirm_clear = false,
                     EscStep::Menus => {
                         self.language_open = false;
                         self.corners_open = false;
-                            }
+                    }
+                    EscStep::Back => self.settings_open = false,
                     // Like the window's own close (the tray keeps running); the popup like a click on the icon.
                     EscStep::Close if self.window_mode => {
                         self.save_size(true);
@@ -808,6 +852,11 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             Message::SetShotKey(on) => {
                 self.setting_error = write_pref("screenshot_key", Some(on.into())).is_err();
                 self.reload(true);
+            }
+            Message::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                self.language_open = false;
+                self.corners_open = false;
             }
             Message::ToggleCorners => {
                 self.corners_open = !self.corners_open;
@@ -920,13 +969,14 @@ mod tests {
 
     #[test]
     fn esc_closes_the_innermost_thing_first() {
-        assert_eq!(esc_step(true, true, true, true), EscStep::Note);
-        assert_eq!(esc_step(false, true, true, true), EscStep::Confirm);
-        assert_eq!(esc_step(false, false, true, true), EscStep::Menus);
-        assert_eq!(esc_step(false, false, false, true), EscStep::Close);
+        assert_eq!(esc_step(true, true, true, true, true), EscStep::Note);
+        assert_eq!(esc_step(false, true, true, true, true), EscStep::Confirm);
+        assert_eq!(esc_step(false, false, true, true, true), EscStep::Menus);
+        assert_eq!(esc_step(false, false, false, true, true), EscStep::Back);
+        assert_eq!(esc_step(false, false, false, false, true), EscStep::Close);
         // Not from the window or the open popup (e.g. the panel button): nothing.
-        assert_eq!(esc_step(true, true, true, false), EscStep::Nothing);
-        assert_eq!(esc_step(false, false, false, false), EscStep::Nothing);
+        assert_eq!(esc_step(true, true, true, true, false), EscStep::Nothing);
+        assert_eq!(esc_step(false, false, false, false, false), EscStep::Nothing);
     }
 
     #[test]
