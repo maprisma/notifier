@@ -454,6 +454,8 @@ struct State {
     fonts: FontPair,
     read: std::time::Instant,
     radius_read: std::time::Instant,
+    /// The desktop's text size as a factor (see [text_scale]).
+    scale: f32,
 }
 
 static STATE: RwLock<Option<State>> = RwLock::new(None);
@@ -468,11 +470,12 @@ pub fn reload() -> bool {
         fonts: desktop_fonts(),
         read: now,
         radius_read: now,
+        scale: read_text_scale(),
     };
     let Ok(mut state) = STATE.write() else { return false };
     let changed = state
         .as_ref()
-        .is_none_or(|s| s.palette != fresh.palette || s.radius != fresh.radius || s.fonts != fresh.fonts);
+        .is_none_or(|s| s.palette != fresh.palette || s.radius != fresh.radius || s.fonts != fresh.fonts || s.scale != fresh.scale);
     *state = Some(fresh);
     drop(state);
     keep_fonts();
@@ -495,11 +498,13 @@ pub fn refresh() -> bool {
         return false;
     }
     let palette = read_palette(d);
+    let scale = read_text_scale();
     let radius = if radius_due { Some((read_window_radius(d), desktop_fonts())) } else { None };
     let Ok(mut guard) = STATE.write() else { return false };
     let Some(state) = guard.as_mut() else { return false };
-    let mut changed = state.palette != palette;
+    let mut changed = state.palette != palette || state.scale != scale;
     state.palette = palette;
+    state.scale = scale;
     state.read = std::time::Instant::now();
     let mut fonts_changed = false;
     if let Some((radius, fonts)) = radius {
@@ -522,6 +527,37 @@ fn with_state<T>(f: impl FnOnce(&State) -> T) -> T {
     }
     let state = STATE.read().expect("look state");
     f(state.as_ref().expect("look state loaded"))
+}
+
+/// GTK's `text-scaling-factor` ("1.25"), clamped to 0.5–3; anything else 1.
+pub fn parse_text_scale(value: &str) -> f32 {
+    value.trim().trim_matches('\'').parse::<f32>().ok().filter(|f| f.is_finite() && *f > 0.0).map_or(1.0, |f| f.clamp(0.5, 3.0))
+}
+
+/// The desktop's text size, read with the colours (every 5 s): GTK's text-scaling-factor, which
+/// Maprisma Display's "Text size" sets on every desktop (GNOME's own setting too). Not in tests.
+fn read_text_scale() -> f32 {
+    if cfg!(test) {
+        return 1.0;
+    }
+    // Off-screen checks set it without touching the desktop.
+    if let Ok(v) = std::env::var("MAPRISMA_TEXT_SCALE") {
+        return parse_text_scale(&v);
+    }
+    std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "text-scaling-factor"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map_or(1.0, |o| parse_text_scale(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// How much a Maprisma window zooms to follow the desktop's text size (corners::set_app_theme
+/// applies it to `--window` windows; applets in the panel keep their size).
+pub fn text_scale() -> f32 {
+    with_state(|s| s.scale)
 }
 
 /// The windows' corner radius, None where libcosmic's theme has it.
@@ -707,5 +743,15 @@ mod tests {
         assert!(t.cosmic().is_dark);
         assert_eq!(t.cosmic().corner_radii.radius_m, [15.0; 4]);
         assert_eq!(t.cosmic().corner_radii.radius_s, [8.0; 4]);
+    }
+
+    #[test]
+    fn text_scale_is_gtks_factor_within_bounds() {
+        assert_eq!(parse_text_scale("1.25\n"), 1.25);
+        assert_eq!(parse_text_scale("1.0"), 1.0);
+        assert_eq!(parse_text_scale("9"), 3.0);
+        assert_eq!(parse_text_scale("0.1"), 0.5);
+        assert_eq!(parse_text_scale("nonsense"), 1.0);
+        assert_eq!(parse_text_scale("-2"), 1.0);
     }
 }

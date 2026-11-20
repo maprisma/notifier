@@ -150,9 +150,13 @@ pub fn apply<'a, M: 'a>(setting: &str, content: impl Into<cosmic::Element<'a, M>
 }
 
 /// The whole app's theme (a `--window`'s title bar too): the desktop's theme with the chosen
-/// corners, else the system's. On start and whenever corners or the desktop's look change.
+/// corners, else the system's; and the window's zoom for the desktop's text size
+/// (look::text_scale). On start and whenever corners or the desktop's look change.
 pub fn set_app_theme<M: Send + 'static>(setting: &str) -> cosmic::Task<cosmic::Action<M>> {
-    cosmic::command::set_theme(theme(setting).unwrap_or_else(cosmic::theme::system_preference))
+    cosmic::Task::batch([
+        cosmic::command::set_theme(theme(setting).unwrap_or_else(cosmic::theme::system_preference)),
+        cosmic::command::set_scaling_factor(crate::look::text_scale()),
+    ])
 }
 
 /// [apply] for a whole window (`--window`): the window's background in the theme's colour too.

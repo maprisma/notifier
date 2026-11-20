@@ -24,9 +24,10 @@ tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt
 futures-util = "0.3"
 
 [dependencies.libcosmic]
-git = "https://github.com/pop-os/libcosmic"
-# The revision COSMIC's own applets (cosmic-applets 1.11) are built against.
-rev = "95236a944bfd51c63a2fc65fe50a592c47168d40"
+# pop-os/libcosmic 95236a9 (what COSMIC's own applets 1.11 are built against) plus one fix:
+# the window zoom reaches iced, so --window windows follow the desktop's text size (look.rs).
+git = "https://github.com/maprisma/libcosmic"
+rev = "40d534c5d5a463cc473e0c9f01ad2da068b11bcd"
 default-features = false
 features = ["applet", "applet-token", "dbus-config", "multi-window", "tokio", "wayland", "winit"]
 
