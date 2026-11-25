@@ -31,6 +31,7 @@ pub struct Settings {
     pub show_count: bool,
     pub language: String,
     pub corners: String,
+    pub skin: String,
     pub screenshot_key: bool,
     /// Crash reports as notifications (app "Crashes").
     pub notify_crashes: bool,
@@ -51,6 +52,7 @@ impl Default for Settings {
             show_count: true,
             language: "system".into(),
             corners: "desktop".into(),
+            skin: "native".into(),
             screenshot_key: true,
             notify_crashes: true,
             ai_helper: "auto".into(),
@@ -111,6 +113,7 @@ pub fn parse(value: &Value) -> Settings {
         show_count: flag("show_count", d.show_count),
         language: language.into(),
         corners: crate::corners::normalize(value.get("corners").and_then(Value::as_str).unwrap_or("")).into(),
+        skin: crate::skin::normalize_skin(value.get(crate::skin::SKIN_KEY).and_then(Value::as_str).unwrap_or("")).into(),
         screenshot_key: flag("screenshot_key", d.screenshot_key),
         notify_crashes: flag("notify_crashes", d.notify_crashes),
         ai_helper: value.get("ai_helper").and_then(Value::as_str).filter(|h| crate::helpers::valid_setting(h)).unwrap_or(&d.ai_helper).into(),
@@ -199,7 +202,7 @@ mod tests {
         assert_eq!(parse(&json!("nonsense")), Settings::default());
         let broken = json!({"dnd": "yes", "dnd_schedule": {"on": 1, "from": "25:00", "to": "7"},
             "history_max": "many", "history_days": null, "muted_apps": "Firefox", "show_count": 0,
-            "language": "xx", "corners": "wobbly", "screenshot_key": "no", "notify_crashes": "off",
+            "language": "xx", "corners": "wobbly", "skin": "neon", "screenshot_key": "no", "notify_crashes": "off",
             "ai_helper": "../x"});
         assert_eq!(parse(&broken), Settings::default());
     }
@@ -209,7 +212,7 @@ mod tests {
         let s = parse(&json!({"dnd": true, "dnd_schedule": {"on": true, "from": "21:30", "to": "6:05"},
             "history_max": 10, "history_days": 400, "muted_apps": ["Firefox", " ", 3, "Steam"],
             "hidden_apps": ["Spotify"], "show_count": false, "language": "de", "corners": "square",
-            "screenshot_key": false, "window_size": {"width": 500, "height": 600}, "unknown": 1}));
+            "skin": "synthwave", "screenshot_key": false, "window_size": {"width": 500, "height": 600}, "unknown": 1}));
         assert!(s.dnd);
         assert_eq!(s.schedule, Schedule { on: true, from: 21 * 60 + 30, to: 6 * 60 + 5 });
         assert_eq!(s.history_max, 50);
@@ -217,7 +220,7 @@ mod tests {
         assert_eq!(s.muted_apps, vec!["Firefox", "Steam"]);
         assert_eq!(s.hidden_apps, vec!["Spotify"]);
         assert!(!s.show_count && !s.screenshot_key);
-        assert_eq!((s.language.as_str(), s.corners.as_str()), ("de", "square"));
+        assert_eq!((s.language.as_str(), s.corners.as_str(), s.skin.as_str()), ("de", "square", "synthwave"));
         assert!(s.notify_crashes);
         assert_eq!(s.ai_helper, "auto");
         let s = parse(&json!({"notify_crashes": false, "ai_helper": "codex"}));

@@ -9,7 +9,7 @@ use maprisma_notifier::i18n::{language_options, read_pref, set_language, tr, trf
 use maprisma_notifier::settings::{self, Settings};
 use maprisma_notifier::crash::{self, Crash};
 use maprisma_notifier::helpers::{self, Installed};
-use maprisma_notifier::{corners, shot};
+use maprisma_notifier::{corners, shot, skin};
 mod window_mode;
 mod window_size;
 use std::process::Stdio;
@@ -162,8 +162,9 @@ struct Notifier<const WINDOW_MODE: bool> {
     shot: shot::Phase,
     capturing: bool,
     corners_open: bool,
+    skin_open: bool,
     setting_error: bool,
-    /// The settings page (Language, F12, Corners, AI helper) is shown instead of the history.
+    /// The settings page (Language, F12, Corners, App skin, AI helper) is shown instead of the history.
     settings_open: bool,
     resize: window_size::Debounce,
     // Check with AI: the installed helpers (looked up off the UI thread now and then) and the
@@ -204,6 +205,8 @@ enum Message {
     SetShotKey(bool),
     ToggleCorners,
     Corners(String),
+    ToggleSkin,
+    Skin(String),
     ToggleSettings,
     CrashDetails(Crash),
     CrashAi(Crash),
@@ -332,6 +335,9 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
                 corners::set_current(&fresh.corners);
                 restyle = true;
             }
+            if fresh.skin != self.settings.skin {
+                restyle = true;
+            }
             self.settings = fresh;
         }
         let history_stamp = stamp(&maprisma_notifier::paths::history_file());
@@ -366,9 +372,17 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
 
     fn header(&self) -> Element<'_, Message> {
         let unread = self.unread();
+        let status: Element<Message> = if skin::skin_style(&self.settings.skin).is_some() {
+            container(dim(status_line(unread, self.dnd)))
+                .padding([2, 8])
+                .class(skin::pill_style(&self.settings.skin))
+                .into()
+        } else {
+            dim(status_line(unread, self.dnd))
+        };
         row![
             icon::from_name(bar_icon(self.dnd, unread)).size(32).symbolic(true).icon(),
-            column![text::title4(tr("Maprisma Notifier")), dim(status_line(unread, self.dnd))].spacing(2),
+            column![text::title4(tr("Maprisma Notifier")), status].spacing(4),
             space::horizontal().width(Length::Fill),
             // Settings at the header's right end, as in Maprisma Launcher.
             cosmic::widget::tooltip(
@@ -392,10 +406,18 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             }
             words = words.push(dim(line));
         }
-        row![words, space::horizontal().width(Length::Fill), cosmic::widget::toggler(self.settings.dnd).on_toggle(Message::SetDnd)]
+        let content = row![words, space::horizontal().width(Length::Fill), cosmic::widget::toggler(self.settings.dnd).on_toggle(Message::SetDnd)]
             .spacing(12)
-            .align_y(Alignment::Center)
-            .into()
+            .align_y(Alignment::Center);
+        if skin::skin_style(&self.settings.skin).is_some() {
+            container(content)
+                .width(Length::Fill)
+                .padding([8, 12])
+                .class(skin::sub_card_style(&self.settings.skin))
+                .into()
+        } else {
+            content.into()
+        }
     }
 
     fn entry_row<'a>(&self, entry: &'a Entry, muted: bool, today: i64) -> Element<'a, Message> {
@@ -419,10 +441,11 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
     }
 
     fn history_view(&self) -> Element<'_, Message> {
+        let skinned = skin::skin_style(&self.settings.skin).is_some();
         let groups = history::by_app(&self.entries, &self.settings.hidden_apps);
         if groups.is_empty() {
             // Empty state: message, a muted line, one action.
-            return container(
+            let empty = container(
                 column![
                     text::body(tr("No notifications")),
                     dim(tr("Notifications from your apps appear here.")),
@@ -433,8 +456,15 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             )
             .width(Length::Fill)
             .padding([24, 16])
-            .align_x(Alignment::Center)
-            .into();
+            .align_x(Alignment::Center);
+            return if skinned {
+                container(empty.class(skin::card_style(&self.settings.skin)))
+                    .width(Length::Fill)
+                    .padding([8, 4])
+                    .into()
+            } else {
+                empty.into()
+            };
         }
         let today = settings::local_day_and_minutes(settings::now_unix()).0;
         let mut list = column![].spacing(12);
@@ -454,7 +484,16 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
             if entries.len() > SHOWN_PER_APP {
                 group = group.push(container(dim(trf("{0} older ones", &[(entries.len() - SHOWN_PER_APP).to_string()]))).padding([0, 8]));
             }
-            list = list.push(group);
+            if skinned {
+                list = list.push(
+                    container(group)
+                        .width(Length::Fill)
+                        .padding([8, 6])
+                        .class(skin::card_style(&self.settings.skin)),
+                );
+            } else {
+                list = list.push(group);
+            }
         }
         list.into()
     }
@@ -462,18 +501,26 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
     fn actions(&self) -> Element<'_, Message> {
         let mut actions = column![divider::horizontal::default()];
         if self.confirm_clear {
-            actions = actions.push(padded_control(
-                column![
-                    text::body(tr("Clear all notifications?")),
-                    row![
-                        space::horizontal().width(Length::Fill),
-                        button::standard(tr("Cancel")).on_press(Message::CancelClear),
-                        button::destructive(tr("Clear all")).on_press(Message::ClearAll),
-                    ]
-                    .spacing(8),
+            let confirm = column![
+                text::body(tr("Clear all notifications?")),
+                row![
+                    space::horizontal().width(Length::Fill),
+                    button::standard(tr("Cancel")).on_press(Message::CancelClear),
+                    button::destructive(tr("Clear all")).on_press(Message::ClearAll),
                 ]
                 .spacing(8),
-            ));
+            ]
+            .spacing(8);
+            if skin::skin_style(&self.settings.skin).is_some() {
+                actions = actions.push(padded_control(
+                    container(confirm)
+                        .width(Length::Fill)
+                        .padding([10, 12])
+                        .class(skin::sub_card_style(&self.settings.skin)),
+                ));
+            } else {
+                actions = actions.push(padded_control(confirm));
+            }
         } else {
             actions = actions.push(menu_button(text::body(tr("Mark all read"))).on_press_maybe((self.unread() > 0).then_some(Message::MarkAllRead)));
             actions = actions.push(menu_button(text::body(tr("Clear all"))).on_press_maybe((!self.entries.is_empty()).then_some(Message::AskClearAll)));
@@ -536,6 +583,30 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
                 page = page.push(menu_button(text::body(label)).on_press(Message::Corners(choice.into())));
             }
         }
+        page = page.push(setting(
+            column![
+                text::body(tr("App skin")),
+                dim(tr("Visual accent for cards and borders; Native keeps your desktop theme untouched.")),
+            ]
+            .spacing(2)
+            .into(),
+            choice(skin::skin_label(&self.settings.skin), self.skin_open, Message::ToggleSkin),
+        ));
+        if self.skin_open {
+            for skin_id in skin::SKINS {
+                let name = skin::skin_label(skin_id);
+                let label = if self.settings.skin == skin_id { format!("✓ {name}") } else { name };
+                let row_inner: Element<Message> = if let Some(st) = skin::skin_style(skin_id) {
+                    row![skin::swatch(st.accent, 10.0), text::body(label)]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into()
+                } else {
+                    text::body(label).into()
+                };
+                page = page.push(menu_button(row_inner).on_press(Message::Skin(skin_id.into())));
+            }
+        }
         if !self.helpers.is_empty() {
             // Chosen for all Maprisma apps in Maprisma Settings → AI (the button opens that page).
             page = page.push(setting(
@@ -590,7 +661,12 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
                 .into(),
             _ => return None,
         };
-        let card = container(body).padding(16).width(Length::Fill).class(theme::Container::Card);
+        let card_class = if skin::skin_style(&self.settings.skin).is_some() {
+            skin::card_style(&self.settings.skin)
+        } else {
+            theme::Container::Card
+        };
+        let card = container(body).padding(16).width(Length::Fill).class(card_class);
         let card = container(card).padding(12).width(if self.window_mode { Length::Fill } else { Length::Fixed(POPUP_WIDTH) });
         Some(card.into())
     }
@@ -674,18 +750,27 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
         let task = if app.window_mode {
             app.set_header_title(tr("Maprisma Notifier"));
             let id = app.core.main_window_id().unwrap();
-            // The desktop's theme for the whole window (title bar too), see look.rs.
-            Task::batch([app.set_window_title(tr("Maprisma Notifier"), id), corners::set_app_theme(&app.settings.corners), load_helpers()])
+            // The desktop's or skin's theme for the whole window (title bar too), see look.rs.
+            Task::batch([
+                app.set_window_title(tr("Maprisma Notifier"), id),
+                skin::apply_window_theme(&app.settings.skin, &app.settings.corners),
+                load_helpers(),
+            ])
         } else {
             load_helpers()
         };
         (app, task)
     }
 
-    /// COSMIC's colours or light/dark mode changed: a window with its own corners (a custom
-    /// theme, which libcosmic leaves alone) takes the new colours too.
+    /// COSMIC's colours or light/dark mode changed: update the cached system theme and re-apply
+    /// the active skin (or corners on the new system colours) in `--window` mode.
     fn system_theme_update(&mut self, _keys: &[&'static str], new_theme: &cosmic::cosmic_theme::Theme) -> Task<Message> {
-        corners::system_theme_update(&self.settings.corners, new_theme, WINDOW_MODE)
+        let _ = corners::system_theme_update::<Message>(&self.settings.corners, new_theme, false);
+        if WINDOW_MODE {
+            skin::apply_window_theme(&self.settings.skin, &self.settings.corners)
+        } else {
+            Task::none()
+        }
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
@@ -738,7 +823,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                 // The desktop's colours and corners (Maprisma Theme can change them any time).
                 restyle |= maprisma_notifier::look::refresh();
                 if restyle && self.window_mode {
-                    return Task::batch([helpers, corners::set_app_theme(&self.settings.corners)]);
+                    return Task::batch([helpers, skin::apply_window_theme(&self.settings.skin, &self.settings.corners)]);
                 }
                 return helpers;
             }
@@ -774,6 +859,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                 self.confirm_clear = true;
                 self.language_open = false;
                 self.corners_open = false;
+                self.skin_open = false;
             }
             Message::CancelClear => self.confirm_clear = false,
             Message::ClearAll => {
@@ -791,6 +877,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             Message::ToggleLanguage => {
                 self.language_open = !self.language_open;
                 self.corners_open = false;
+                self.skin_open = false;
             }
             Message::ShotKey(id) => {
                 let shown = if self.window_mode { self.core.main_window_id() == Some(id) } else { self.popup == Some(id) };
@@ -832,12 +919,19 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
             },
             Message::Escape(id) => {
                 let shown = if self.window_mode { self.core.main_window_id() == Some(id) } else { self.popup == Some(id) };
-                match esc_step(self.shot.open(), self.confirm_clear, self.language_open || self.corners_open, self.settings_open, shown) {
+                match esc_step(
+                    self.shot.open(),
+                    self.confirm_clear,
+                    self.language_open || self.corners_open || self.skin_open,
+                    self.settings_open,
+                    shown,
+                ) {
                     EscStep::Note => return self.finish_note(false),
                     EscStep::Confirm => self.confirm_clear = false,
                     EscStep::Menus => {
                         self.language_open = false;
                         self.corners_open = false;
+                        self.skin_open = false;
                     }
                     EscStep::Back => self.settings_open = false,
                     // Like the window's own close (the tray keeps running); the popup like a click on the icon.
@@ -857,10 +951,12 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                 self.settings_open = !self.settings_open;
                 self.language_open = false;
                 self.corners_open = false;
+                self.skin_open = false;
             }
             Message::ToggleCorners => {
                 self.corners_open = !self.corners_open;
                 self.language_open = false;
+                self.skin_open = false;
             }
             Message::Corners(choice) => {
                 let choice = corners::normalize(&choice);
@@ -872,7 +968,24 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                 corners::set_current(choice);
                 self.corners_open = false;
                 if self.window_mode {
-                    return corners::set_app_theme(choice);
+                    return skin::apply_window_theme(&self.settings.skin, choice);
+                }
+            }
+            Message::ToggleSkin => {
+                self.skin_open = !self.skin_open;
+                self.language_open = false;
+                self.corners_open = false;
+            }
+            Message::Skin(choice) => {
+                let choice = skin::normalize_skin(&choice);
+                // "Native" is the default: no key in settings.json.
+                let value = (choice != "native").then(|| Value::from(choice));
+                self.setting_error = write_pref(skin::SKIN_KEY, value).is_err();
+                self.reload(true);
+                self.settings.skin = choice.to_string();
+                self.skin_open = false;
+                if self.window_mode {
+                    return skin::apply_window_theme(choice, &self.settings.corners);
                 }
             }
             Message::CheckClose => {
@@ -933,7 +1046,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     fn view(&self) -> Element<'_, Message> {
         maprisma_notifier::look::keep_fonts();
         if self.window_mode {
-            return corners::apply_window(&self.settings.corners, self.popup_content());
+            return skin::apply_window(&self.settings.skin, &self.settings.corners, self.popup_content());
         }
         let horizontal = matches!(self.core.applet.anchor, PanelAnchor::Top | PanelAnchor::Bottom);
         let padding = self.core.applet.suggested_padding(true).0;
@@ -953,9 +1066,9 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     fn view_window(&self, _id: window::Id) -> Element<'_, Message> {
         maprisma_notifier::look::keep_fonts();
         if self.window_mode {
-            return corners::apply_window(&self.settings.corners, self.popup_content());
+            return skin::apply_window(&self.settings.skin, &self.settings.corners, self.popup_content());
         }
-        corners::apply(&self.settings.corners, self.core.applet.popup_container(self.popup_content()))
+        skin::apply_popup(&self.settings.skin, &self.settings.corners, &self.core, self.popup_content())
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
