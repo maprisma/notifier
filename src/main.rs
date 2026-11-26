@@ -9,9 +9,9 @@ use maprisma_notifier::i18n::{language_options, read_pref, set_language, tr, trf
 use maprisma_notifier::settings::{self, Settings};
 use maprisma_notifier::crash::{self, Crash};
 use maprisma_notifier::helpers::{self, Installed};
-use maprisma_notifier::{corners, shot, skin};
+use maprisma_notifier::skin;
+use maprisma_kit::{AppInfo, corners, look, shot, window_size};
 mod window_mode;
-mod window_size;
 use std::process::Stdio;
 use std::sync::LazyLock;
 use std::sync::atomic::Ordering;
@@ -33,9 +33,9 @@ const ICON: &str = "io.github.ubruckhaus.CosmicMaprismaNotifier-symbolic";
 const ICON_UNREAD: &str = "io.github.ubruckhaus.CosmicMaprismaNotifier-unread-symbolic";
 const ICON_DND: &str = "io.github.ubruckhaus.CosmicMaprismaNotifier-dnd-symbolic";
 static AUTOSIZE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("notifier-autosize"));
-static NOTE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("notifier-shot-note"));
+static NOTE_ID: LazyLock<Id> = LazyLock::new(Id::unique);
 // F12 pictures go to ~/Pictures/<this>/ (the app's name, the same in every language).
-const SHOT_FOLDER: &str = "Maprisma Notifier";
+const SHOT_APP: AppInfo = AppInfo::new(APP_ID, "Maprisma Notifier");
 
 const POPUP_WIDTH: f32 = 400.0;
 const POPUP_LIST_HEIGHT: f32 = 460.0;
@@ -53,7 +53,7 @@ fn main() -> cosmic::iced::Result {
             return Ok(());
         };
         cosmic::app::run::<Notifier<true>>(
-            cosmic::app::Settings::default().default_font(maprisma_notifier::look::default_font())
+            cosmic::app::Settings::default().default_font(look::default_font())
                 .size({
                     let (width, height) = window_start_size();
                     cosmic::iced::Size::new(width, height)
@@ -66,7 +66,7 @@ fn main() -> cosmic::iced::Result {
     } else {
         // COSMIC: the applet keeps the recorder running (KDE and Hyprland: the tray does).
         maprisma_notifier::recorder::supervise();
-        maprisma_notifier::look::keep_fonts();
+        look::keep_fonts();
         cosmic::applet::run::<Notifier<false>>(())
     }
 }
@@ -647,28 +647,29 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
 
     // After F12: "Screenshot saved", where, the optional note and Done (or the error and Done).
     fn shot_overlay(&self) -> Option<Element<'_, Message>> {
-        let body: Element<Message> = match &self.shot {
-            shot::Phase::Note { shown, text: note, .. } => column![
-                text::heading(tr("Screenshot saved")),
-                dim(trf("Saved as {0}", &[shown.clone()])),
-                cosmic::widget::text_input(tr("What is wrong? (optional)"), note.as_str()).id(NOTE_ID.clone()).on_input(Message::NoteInput).on_submit(|_| Message::NoteDone),
-                row![space::horizontal().width(Length::Fill), button::suggested(tr("Done")).on_press(Message::NoteDone)],
-            ]
-            .spacing(10)
-            .into(),
-            shot::Phase::Error(reason) => column![text::body(reason.clone()), row![space::horizontal().width(Length::Fill), button::suggested(tr("Done")).on_press(Message::NoteDone)]]
-                .spacing(10)
-                .into(),
-            _ => return None,
+        let labels = shot::ShotLabels {
+            saved_heading: tr("Screenshot saved"),
+            saved_as_template: tr("Saved as {0}"),
+            note_placeholder: tr("What is wrong? (optional)"),
+            done_button: tr("Done"),
+            save_error_template: tr("The screenshot could not be saved: {0}"),
+            note_error_template: tr("The note could not be saved: {0}"),
         };
         let card_class = if skin::skin_style(&self.settings.skin).is_some() {
             skin::card_style(&self.settings.skin)
         } else {
             theme::Container::Card
         };
-        let card = container(body).padding(16).width(Length::Fill).class(card_class);
-        let card = container(card).padding(12).width(if self.window_mode { Length::Fill } else { Length::Fixed(POPUP_WIDTH) });
-        Some(card.into())
+        let width = if self.window_mode { Length::Fill } else { Length::Fixed(POPUP_WIDTH) };
+        shot::note_overlay(
+            &self.shot,
+            NOTE_ID.clone(),
+            &labels,
+            card_class,
+            width,
+            Message::NoteInput,
+            Message::NoteDone,
+        )
     }
 
     // Done, Enter or the popup closing (keep: the note typed so far is saved), Esc (skip).
@@ -678,7 +679,7 @@ impl<const WINDOW_MODE: bool> Notifier<WINDOW_MODE> {
                 if keep && shot::note_text(&text).is_some() {
                     // Busy until the note is written, so a new F12 cannot replace it.
                     self.shot = shot::Phase::Noting;
-                    return off_thread(move || shot::save_note(&path, SHOT_FOLDER, &text).map(|_| ()).map_err(|e| e.to_string()), Message::NoteSaved);
+                    return off_thread(move || shot::save_note_for(&SHOT_APP, &path, &text).map(|_| ()).map_err(|e| e.to_string()), Message::NoteSaved);
                 }
             }
             shot::Phase::Error(_) => {}
@@ -736,7 +737,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
 
     fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
         let mut core = core;
-        maprisma_notifier::look::solid(&mut core);
+        look::solid(&mut core);
         let mut app = Self { core, window_mode: WINDOW_MODE, ..Default::default() };
         // Debug builds only: start on the settings page (for off-screen screenshots).
         app.settings_open = cfg!(debug_assertions) && std::env::var("MAPRISMA_SHOT_PAGE").as_deref() == Ok("settings");
@@ -821,7 +822,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                 self.shared_helper = maprisma_notifier::shared_ai::choice(&self.settings.ai_helper);
                 let mut restyle = self.reload(false);
                 // The desktop's colours and corners (Maprisma Theme can change them any time).
-                restyle |= maprisma_notifier::look::refresh();
+                restyle |= look::refresh();
                 if restyle && self.window_mode {
                     return Task::batch([helpers, skin::apply_window_theme(&self.settings.skin, &self.settings.corners)]);
                 }
@@ -892,7 +893,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
                     return Task::none();
                 }
                 let (width, height) = (picture.size.width, picture.size.height);
-                return off_thread(move || shot::save_screenshot(SHOT_FOLDER, &picture.rgba, width, height), Message::ShotSaved);
+                return off_thread(move || shot::save_screenshot_for(&SHOT_APP, &picture.rgba, width, height), Message::ShotSaved);
             }
             Message::ShotSaved(result) => {
                 self.shot = match result {
@@ -1044,7 +1045,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        maprisma_notifier::look::keep_fonts();
+        look::keep_fonts();
         if self.window_mode {
             return skin::apply_window(&self.settings.skin, &self.settings.corners, self.popup_content());
         }
@@ -1064,7 +1065,7 @@ impl<const WINDOW_MODE: bool> cosmic::Application for Notifier<WINDOW_MODE> {
     }
 
     fn view_window(&self, _id: window::Id) -> Element<'_, Message> {
-        maprisma_notifier::look::keep_fonts();
+        look::keep_fonts();
         if self.window_mode {
             return skin::apply_window(&self.settings.skin, &self.settings.corners, self.popup_content());
         }

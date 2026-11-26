@@ -7,7 +7,7 @@
 //! | COSMIC   | cosmic-config `com.system76.CosmicNotifications` v1 `do_not_disturb` (`true`/`false`) |
 //! | KDE      | `org.freedesktop.Notifications.Inhibit`, held while in effect ([Kde]) |
 
-use crate::look::Desktop;
+use maprisma_kit::look::Desktop;
 use serde_json::Value;
 
 /// Hyprland: `notifications.dnd` in Maprisma Shell's settings, the other keys kept. Written only
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn targets_per_desktop() {
-        use crate::look::desktop_from;
+        use maprisma_kit::look::desktop_from;
         assert_eq!(target(desktop_from(None, "Hyprland")), Some(Target::Shell));
         assert_eq!(target(desktop_from(None, "COSMIC")), Some(Target::Cosmic));
         assert_eq!(target(desktop_from(None, "KDE")), Some(Target::Kde));

@@ -3,7 +3,7 @@
 
 fn main() {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
-    let desktop = maprisma_notifier::look::desktop();
+    let desktop = maprisma_kit::look::desktop();
     let code = runtime.block_on(maprisma_notifier::recorder::run(maprisma_notifier::dnd::target(desktop)));
     std::process::exit(code);
 }

@@ -23,8 +23,8 @@ pub struct SkinStyle {
 }
 
 impl SkinStyle {
-    pub fn palette(&self) -> crate::look::Palette {
-        crate::look::Palette {
+    pub fn palette(&self) -> maprisma_kit::look::Palette {
+        maprisma_kit::look::Palette {
             accent: Some(self.accent_rgb),
             background: Some(self.window_bg),
             foreground: Some(self.foreground),
@@ -110,10 +110,10 @@ pub fn with_alpha(mut color: Color, alpha: f32) -> Color {
 /// Active theme for the chosen skin and corners; `None` when Native on COSMIC with desktop corners.
 pub fn active_theme(skin: &str, corners_choice: &str) -> Option<cosmic::Theme> {
     if let Some(st) = skin_style(skin) {
-        let radius = crate::corners::radius(corners_choice, crate::corners::desktop_radius());
-        Some(crate::look::theme_from(&st.palette(), Some(radius)))
+        let radius = maprisma_kit::corners::radius(corners_choice, maprisma_kit::corners::desktop_radius());
+        Some(maprisma_kit::look::theme_from(&st.palette(), Some(radius)))
     } else {
-        crate::corners::theme(corners_choice)
+        maprisma_kit::corners::theme(corners_choice)
     }
 }
 
@@ -125,7 +125,7 @@ pub fn apply_window_theme<M: Send + 'static>(
     let theme = active_theme(skin, corners_choice).unwrap_or_else(cosmic::theme::system_preference);
     cosmic::Task::batch([
         cosmic::command::set_theme(theme),
-        cosmic::command::set_scaling_factor(crate::look::text_scale()),
+        cosmic::command::set_scaling_factor(maprisma_kit::look::text_scale()),
     ])
 }
 
@@ -137,7 +137,7 @@ pub fn apply_window<'a, M: 'a>(
 ) -> Element<'a, M> {
     match active_theme(skin, corners_choice) {
         Some(theme) => cosmic::iced::widget::themer(Some(theme), content)
-            .background(crate::look::window_background)
+            .background(maprisma_kit::look::window_background)
             .text_color(|t: &cosmic::Theme| t.cosmic().on_bg_color().into())
             .into(),
         None => content.into(),
@@ -161,7 +161,7 @@ pub fn apply_popup<'a, M: 'static>(
                         background: Some(Background::Color(bg)),
                         text_color: Some(fg),
                         border: Border {
-                            radius: crate::corners::now().radius.into(),
+                            radius: maprisma_kit::corners::now().radius.into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -189,7 +189,7 @@ pub fn card_style(skin: &str) -> theme::Container<'static> {
         iced_container::Style {
             background: Some(Background::Color(bg)),
             border: Border {
-                radius: crate::corners::now().radius.into(),
+                radius: maprisma_kit::corners::now().radius.into(),
                 width,
                 color: border,
             },
@@ -209,7 +209,7 @@ pub fn sub_card_style(skin: &str) -> theme::Container<'static> {
         iced_container::Style {
             background: Some(Background::Color(bg)),
             border: Border {
-                radius: crate::corners::now().small.into(),
+                radius: maprisma_kit::corners::now().small.into(),
                 width: 1.0,
                 color: border,
             },
@@ -224,7 +224,7 @@ pub fn pill_style(skin: &str) -> theme::Container<'static> {
         Some(st) => iced_container::Style {
             background: Some(Background::Color(with_alpha(st.accent, 0.24))),
             border: Border {
-                radius: crate::corners::now().pill.into(),
+                radius: maprisma_kit::corners::now().pill.into(),
                 width: 1.0,
                 color: with_alpha(st.border_tint, 0.48),
             },
@@ -233,7 +233,7 @@ pub fn pill_style(skin: &str) -> theme::Container<'static> {
         None => iced_container::Style {
             background: Some(Background::Color(with_alpha(Color::from(theme.cosmic().on_bg_color()), 0.12))),
             border: Border {
-                radius: crate::corners::now().pill.into(),
+                radius: maprisma_kit::corners::now().pill.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -250,7 +250,7 @@ pub fn swatch<'a, M: 'a>(color: Color, size: f32) -> Element<'a, M> {
             iced_container::Style {
                 background: Some(Background::Color(color)),
                 border: Border {
-                    radius: crate::corners::now().pill.min(size / 2.0).into(),
+                    radius: maprisma_kit::corners::now().pill.min(size / 2.0).into(),
                     width: 1.0,
                     color: with_alpha(base, 0.3),
                 },

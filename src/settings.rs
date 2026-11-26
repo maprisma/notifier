@@ -112,7 +112,7 @@ pub fn parse(value: &Value) -> Settings {
         hidden_apps: value.get("hidden_apps").map(names).unwrap_or_default(),
         show_count: flag("show_count", d.show_count),
         language: language.into(),
-        corners: crate::corners::normalize(value.get("corners").and_then(Value::as_str).unwrap_or("")).into(),
+        corners: maprisma_kit::corners::normalize(value.get("corners").and_then(Value::as_str).unwrap_or("")).into(),
         skin: crate::skin::normalize_skin(value.get(crate::skin::SKIN_KEY).and_then(Value::as_str).unwrap_or("")).into(),
         screenshot_key: flag("screenshot_key", d.screenshot_key),
         notify_crashes: flag("notify_crashes", d.notify_crashes),

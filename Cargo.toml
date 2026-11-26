@@ -17,11 +17,11 @@ path = "src/recorder/main.rs"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Already in the dependency tree (libcosmic): F12 screenshots (PNG, openat/fstat).
-png = "0.18"
+# POSIX syscalls (localtime_r, flock, fcntl, prctl, open flags).
 libc = "0.2"
 tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt", "rt-multi-thread", "sync"] }
 futures-util = "0.3"
+maprisma-kit = { git = "https://github.com/maprisma/maprisma-kit-rs", tag = "v0.1.0" }
 
 [dependencies.libcosmic]
 # pop-os/libcosmic 95236a9 (what COSMIC's own applets 1.11 are built against) plus one fix:

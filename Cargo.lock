@@ -3215,13 +3215,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "maprisma-kit"
+version = "0.1.0"
+source = "git+https://github.com/maprisma/maprisma-kit-rs?tag=v0.1.0#16dd2958c70630286a1d04518b3d5589ac7d0eaa"
+dependencies = [
+ "libc",
+ "libcosmic",
+ "png 0.18.1",
+ "serde_json",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "maprisma-notifier"
 version = "0.2.0"
 dependencies = [
  "futures-util",
  "libc",
  "libcosmic",
- "png 0.18.1",
+ "maprisma-kit",
  "serde",
  "serde_json",
  "tokio",
